@@ -2,6 +2,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import BookingOrder
@@ -45,6 +46,7 @@ async def my_bookings(
     user_id = uuid.UUID(claims["sub"])
     rows = await db.scalars(
         select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
         .where(BookingOrder.user_id == user_id)
         .order_by(BookingOrder.created_at.desc())
     )
@@ -56,7 +58,12 @@ async def admin_list_bookings(
     _: dict = Depends(require_roles("ADMIN", "STAFF")),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await db.scalars(select(BookingOrder).order_by(BookingOrder.created_at.desc()).limit(100))
+    rows = await db.scalars(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .order_by(BookingOrder.created_at.desc())
+        .limit(100)
+    )
     return [BookingResponse.model_validate(o) for o in rows.all()]
 
 
@@ -76,7 +83,11 @@ async def admin_cancel_booking(
     _: dict = Depends(require_roles("ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code))
+    order = await db.scalar(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .where(BookingOrder.booking_code == booking_code)
+    )
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
     if order.status in ("CANCELLED", "EXPIRED"):
@@ -86,7 +97,11 @@ async def admin_cancel_booking(
 
 @router.get("/lookup/{booking_code}", response_model=BookingResponse)
 async def lookup_booking(booking_code: str, db: AsyncSession = Depends(get_db)):
-    order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code.strip()))
+    order = await db.scalar(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .where(BookingOrder.booking_code == booking_code.strip())
+    )
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy mã đặt sân")
     return BookingResponse.model_validate(order)
@@ -98,7 +113,11 @@ async def internal_get_booking(
     _: None = Depends(verify_internal_key),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code.strip()))
+    order = await db.scalar(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .where(BookingOrder.booking_code == booking_code.strip())
+    )
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
     return BookingResponse.model_validate(order)
@@ -110,7 +129,11 @@ async def customer_cancel_booking(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code.strip()))
+    order = await db.scalar(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .where(BookingOrder.booking_code == booking_code.strip())
+    )
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
     if order.status != "PENDING_PAYMENT":

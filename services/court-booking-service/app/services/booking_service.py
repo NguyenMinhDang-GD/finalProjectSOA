@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import AsyncSessionLocal
@@ -31,6 +32,18 @@ from app.schemas import (
 
 logger = logging.getLogger(__name__)
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+async def _reload_booking(db: AsyncSession, booking_id: uuid.UUID) -> BookingOrder:
+    stmt = (
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .execution_options(populate_existing=True)
+        .where(BookingOrder.id == booking_id)
+    )
+    order = await db.scalar(stmt)
+    assert order is not None
+    return order
 
 
 def _slot_lock_key(court_id: uuid.UUID, play_date: date, start_hour: int) -> str:
@@ -227,7 +240,7 @@ async def create_booking(
                 detail="Một hoặc nhiều khung giờ đã được đặt bởi giao dịch khác",
             ) from exc
 
-        await db.refresh(order)
+        order = await _reload_booking(db, order.id)
         BOOKINGS_CREATED_TOTAL.labels(
             court_type=court.court_type,
             customer_type="registered" if user_id else "guest",
@@ -255,7 +268,7 @@ async def release_booking_slots(
         .values(slot_status="RELEASED")
     )
     await db.commit()
-    await db.refresh(order)
+    order = await _reload_booking(db, order.id)
 
     keys = [_slot_lock_key(order.court_id, order.play_date, s.start_hour) for s in order.slots]
     if keys:
