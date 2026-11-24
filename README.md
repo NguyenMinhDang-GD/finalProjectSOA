@@ -84,20 +84,13 @@ docker compose ps
 
 ---
 
-## 6. Kiểm thử tự động
-Chạy kiểm thử End-to-End trực tiếp trên hệ thống Docker đang chạy:
+## 6. Vận hành & Theo dõi Log
+Xem log trực tiếp của các microservices:
 ```powershell
-python tests/e2e_verify.py
+docker compose logs -f
 ```
 
 Dừng hệ thống khi không sử dụng:
 ```powershell
 docker compose down
 ```
-
----
-
-## 7. Tài liệu tham khảo trong thư mục `docs/`
-- [Báo cáo Thiết kế Kiến trúc SOA (Word)](./docs/Bao_cao_Thiet_ke_SOA_Pickleball.docx)
-- [Báo cáo Kiến trúc & Hướng dẫn Demo (Markdown)](./docs/Bao_cao_Kien_truc_va_Huong_dan_Demo.md)
-- [Tổng quan Yêu cầu Dự án (Word)](./docs/Yeu_cau_tong_quan_SOA_Pickleball.docx)

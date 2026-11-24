@@ -20,3 +20,7 @@ build/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local docs & test scripts (excluded from Git)
+tests/
+docs/
