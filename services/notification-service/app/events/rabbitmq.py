@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import aio_pika
 from aio_pika.abc import AbstractRobustChannel, AbstractRobustConnection
@@ -16,7 +17,16 @@ class RabbitMQClient:
         self.exchange: aio_pika.abc.AbstractExchange | None = None
 
     async def connect(self) -> None:
-        self.connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+        for attempt in range(1, 16):
+            try:
+                self.connection = await aio_pika.connect_robust(settings.rabbitmq_url)
+                break
+            except Exception as exc:
+                if attempt == 15:
+                    raise
+                logger.warning("RabbitMQ not ready (attempt %s/15): %s", attempt, exc)
+                await asyncio.sleep(2)
+        assert self.connection is not None
         self.channel = await self.connection.channel()
         await self.channel.set_qos(prefetch_count=5)
 
