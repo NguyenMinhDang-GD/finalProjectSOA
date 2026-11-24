@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'Pickleball SOA Dashboards'
+    orgId: 1
+    folder: 'SOA Monitoring'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'auth-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['auth-service:8001']
+        labels:
+          service: 'auth-service'
+
+  - job_name: 'court-booking-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['court-booking-service:8002']
+        labels:
+          service: 'court-booking-service'
+
+  - job_name: 'payment-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['payment-service:8003']
+        labels:
+          service: 'payment-service'
+
+  - job_name: 'checkin-qr-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['checkin-qr-service:8004']
+        labels:
+          service: 'checkin-qr-service'
+
+  - job_name: 'notification-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['notification-service:8005']
+        labels:
+          service: 'notification-service'

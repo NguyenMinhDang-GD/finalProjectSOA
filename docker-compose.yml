@@ -1,0 +1,272 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pkb-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pickleball}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pickleball_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/init-multi-db.sql:/docker-entrypoint-initdb.d/init-multi-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pickleball}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pkb-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: pkb-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pkb-net
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: pkb-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - pkb-net
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: pkb-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - pkb-net
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+    container_name: pkb-auth-service
+    environment:
+      SERVICE_NAME: auth-service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/auth_db
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  court-booking-service:
+    build:
+      context: ./services/court-booking-service
+    container_name: pkb-court-booking-service
+    environment:
+      SERVICE_NAME: court-booking-service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/booking_db
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+    container_name: pkb-payment-service
+    environment:
+      SERVICE_NAME: payment-service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/payment_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      BOOKING_SERVICE_URL: http://court-booking-service:8002
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      VIETQR_BANK_BIN: ${VIETQR_BANK_BIN:-970422}
+      VIETQR_ACCOUNT_NO: ${VIETQR_ACCOUNT_NO:-0123456789}
+      VIETQR_ACCOUNT_NAME: ${VIETQR_ACCOUNT_NAME:-SAN PICKLEBALL SOA}
+      ENABLE_DEMO_WEBHOOK: ${ENABLE_DEMO_WEBHOOK:-true}
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  checkin-qr-service:
+    build:
+      context: ./services/checkin-qr-service
+    container_name: pkb-checkin-qr-service
+    environment:
+      SERVICE_NAME: checkin-qr-service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/checkin_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET}
+      QR_HMAC_SECRET: ${QR_HMAC_SECRET}
+      ALLOW_DEMO_BYPASS_TIME: ${ALLOW_DEMO_BYPASS_TIME:-true}
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+    container_name: pkb-notification-service
+    environment:
+      SERVICE_NAME: notification-service
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/notification_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      SMTP_FROM: ${SMTP_FROM:-noreply@pickleball-soa.vn}
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  web-frontend:
+    build:
+      context: ./frontend
+    container_name: pkb-web-frontend
+    networks:
+      - pkb-net
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    container_name: pkb-api-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - auth-service
+      - court-booking-service
+      - payment-service
+      - checkin-qr-service
+      - notification-service
+      - web-frontend
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/gateway-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pkb-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pkb-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    networks:
+      - pkb-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pkb-grafana
+    ports:
+      - "3100:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - pkb-net
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: pkb-ngrok
+    profiles: ["tunnel"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    command: ["http", "api-gateway:80", "--log=stdout"]
+    ports:
+      - "4040:4040"
+    depends_on:
+      - api-gateway
+    networks:
+      - pkb-net
+
+volumes:
+  pg_data:
+  prom_data:
+  grafana_data:
+
+networks:
+  pkb-net:
+    driver: bridge

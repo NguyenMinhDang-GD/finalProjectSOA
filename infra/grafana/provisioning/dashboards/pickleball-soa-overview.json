@@ -1,0 +1,231 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } }, "type": "value" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "title": "Microservices Health Status (UP / DOWN)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "up{job=~\".*-service\"}",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "title": "Bookings Created",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(pickleball_bookings_created_total) or vector(0)",
+          "legendFormat": "Bookings",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 15, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "title": "Payments Confirmed",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(pickleball_payments_confirmed_total) or vector(0)",
+          "legendFormat": "Payments",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 18, "y": 0 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "title": "QR Check-in Success",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(pickleball_qr_scans_total{result=\"success\"}) or vector(0)",
+          "legendFormat": "Check-ins",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 3, "x": 21, "y": 0 },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "title": "Emails Sent",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(pickleball_emails_sent_total{status=\"sent\"}) or vector(0)",
+          "legendFormat": "Emails",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 6,
+      "title": "HTTP Request Rate (RPS) per Service",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (service) (rate(http_requests_total[1m]))",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 7,
+      "title": "HTTP p95 Latency per Service",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+      "id": 8,
+      "title": "QR Scan Outcomes Breakdown",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (result) (pickleball_qr_scans_total)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+      "id": 9,
+      "title": "HTTP 4xx / 5xx Error Rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (service, status_code) (rate(http_requests_total{status_code=~\"4..|5..\"}[1m]))",
+          "legendFormat": "{{service}} ({{status_code}})",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["soa", "pickleball", "microservices"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "title": "Pickleball SOA Overview",
+  "uid": "pickleball-soa-overview",
+  "version": 1
+}
