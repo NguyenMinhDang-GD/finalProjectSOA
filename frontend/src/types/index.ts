@@ -33,7 +33,7 @@ export interface AvailabilitySlot {
   label: string;
   price: number;
   is_peak_hour: boolean;
-  status: 'AVAILABLE' | 'LOCKED' | 'BOOKED' | 'MAINTENANCE';
+  status: 'AVAILABLE' | 'LOCKED' | 'BOOKED' | 'MAINTENANCE' | 'PAST';
 }
 
 export interface CourtAvailability {

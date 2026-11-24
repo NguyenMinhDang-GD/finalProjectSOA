@@ -179,7 +179,7 @@ export const BookingPage: React.FC = () => {
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-3.5 h-3.5 rounded bg-slate-200 inline-block" />
-          <span>Đã đặt / Bảo trì</span>
+          <span>Đã đặt / Quá giờ / Bảo trì</span>
         </div>
         {availability?.is_weekend && (
           <span className="ml-auto text-amber-700 font-semibold bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200">
@@ -241,6 +241,8 @@ export const BookingPage: React.FC = () => {
                         : 'bg-white border-emerald-200 hover:border-emerald-600 hover:bg-emerald-50 text-slate-800 cursor-pointer';
                     } else if (slot.status === 'LOCKED') {
                       cls += 'bg-yellow-50 border-yellow-300 text-yellow-800 cursor-not-allowed opacity-80';
+                    } else if (slot.status === 'PAST') {
+                      cls += 'bg-slate-100/70 border-slate-200 text-slate-400 cursor-not-allowed opacity-70';
                     } else {
                       cls += 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed';
                     }
@@ -253,7 +255,7 @@ export const BookingPage: React.FC = () => {
                         onClick={() => handleToggleSlot(item, slot.start_hour, slot.status)}
                         className={cls}
                       >
-                        <span className="text-xs font-bold">
+                        <span className={`text-xs font-bold ${slot.status === 'PAST' ? 'line-through' : ''}`}>
                           {String(slot.start_hour).padStart(2, '0')}:00
                         </span>
                         <span className={`text-[11px] mt-0.5 ${isSelected ? 'text-emerald-100' : 'text-slate-500'}`}>
@@ -261,6 +263,8 @@ export const BookingPage: React.FC = () => {
                             ? `${Math.round(slot.price / 1000)}k`
                             : slot.status === 'LOCKED'
                             ? 'Giữ chỗ'
+                            : slot.status === 'PAST'
+                            ? 'Quá giờ'
                             : slot.status === 'MAINTENANCE'
                             ? 'Bảo trì'
                             : 'Đã đặt'}

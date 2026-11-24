@@ -3,7 +3,7 @@ import json
 import logging
 import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -135,15 +135,21 @@ async def get_availability(db: AsyncSession, play_date: date) -> AvailabilityRes
         (s.court_id, s.start_hour): s.slot_status for s in slots_rows
     }
 
+    now_vn = datetime.now(VN_TZ)
     court_items: list[CourtAvailabilityItem] = []
     for court in courts:
         items: list[AvailabilitySlotItem] = []
         for h in range(5, 22):
             price, is_peak = _find_slot_price(rules, court.court_type, is_weekend, h)
+            slot_start_vn = datetime.combine(play_date, dt_time(h, 0), tzinfo=VN_TZ)
             if court.status != "ACTIVE":
                 slot_status = "MAINTENANCE"
+            elif (court.id, h) in slot_map:
+                slot_status = slot_map[(court.id, h)]
+            elif slot_start_vn <= now_vn:
+                slot_status = "PAST"
             else:
-                slot_status = slot_map.get((court.id, h), "AVAILABLE")
+                slot_status = "AVAILABLE"
             items.append(
                 AvailabilitySlotItem(
                     start_hour=h,
@@ -165,9 +171,19 @@ async def create_booking(
     payload: CreateBookingRequest,
     user_id: uuid.UUID | None,
 ) -> BookingResponse:
-    today_vn = datetime.now(VN_TZ).date()
-    if payload.play_date < today_vn:
+    now_vn = datetime.now(VN_TZ)
+    if payload.play_date < now_vn.date():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Không thể đặt sân cho ngày trong quá khứ")
+
+    earliest_slot_vn = datetime.combine(payload.play_date, dt_time(payload.hours[0], 0), tzinfo=VN_TZ)
+    if earliest_slot_vn <= now_vn:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Khung giờ {payload.hours[0]:02d}:00 - {payload.hours[0] + 1:02d}:00 đã qua thời gian hiện tại "
+                f"({now_vn.strftime('%H:%M')}), không thể đặt sân"
+            ),
+        )
 
     court = await db.scalar(select(Court).where(Court.id == payload.court_id))
     if not court:

@@ -58,7 +58,7 @@ class AvailabilitySlotItem(BaseModel):
     label: str
     price: float
     is_peak_hour: bool
-    status: Literal["AVAILABLE", "LOCKED", "BOOKED", "MAINTENANCE"]
+    status: Literal["AVAILABLE", "LOCKED", "BOOKED", "MAINTENANCE", "PAST"]
 
 
 class CourtAvailabilityItem(BaseModel):
