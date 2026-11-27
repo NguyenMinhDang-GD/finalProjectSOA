@@ -32,6 +32,9 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
     customer_name = ticket_event["customer_name"]
     recipient_email = ticket_event["customer_email"]
     court_name = ticket_event["court_name"]
+    branch_name = ticket_event.get("branch_name") or "Chi nhánh 1"
+    location_name = ticket_event.get("location_name") or "Cơ sở chính"
+    location_address = ticket_event.get("location_address") or ""
     play_date = ticket_event["play_date"]
     start_hour = int(ticket_event["start_hour"])
     end_hour = int(ticket_event["end_hour"])
@@ -46,10 +49,21 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
     qr_cid = make_msgid(domain="pickleball-soa.vn")
     qr_cid_clean = qr_cid[1:-1]
 
+    address_line_txt = f"- Địa chỉ: {location_address}\n" if location_address else ""
+    address_row_html = (
+        f'<tr><td style="padding: 8px 0; color: #6b7280;">Địa chỉ sân:</td>'
+        f'<td style="padding: 8px 0; font-weight: bold;">{location_address}</td></tr>'
+        if location_address
+        else ""
+    )
+
     plain_text = (
         f"Xin chào {customer_name},\n\n"
         f"Thanh toán đặt sân Pickleball của bạn đã được xác nhận!\n"
         f"- Mã đặt sân: {booking_code}\n"
+        f"- Chi nhánh: {branch_name}\n"
+        f"- Địa điểm: {location_name}\n"
+        f"{address_line_txt}"
         f"- Sân: {court_name}\n"
         f"- Ngày chơi: {play_date}\n"
         f"- Khung giờ: {start_hour:02d}:00 - {end_hour:02d}:00\n"
@@ -64,13 +78,16 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
         <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #d1fae5;">
           <div style="background: #065f46; color: #ffffff; padding: 20px 24px;">
             <h2 style="margin: 0; font-size: 20px;">XÁC NHẬN ĐẶT SÂN PICKLEBALL</h2>
-            <p style="margin: 6px 0 0 0; font-size: 13px; color: #a7f3d0;">Hệ thống Đặt sân Thông minh (SOA)</p>
+            <p style="margin: 6px 0 0 0; font-size: 13px; color: #a7f3d0;">{branch_name} • {location_name}</p>
           </div>
           <div style="padding: 24px;">
             <p>Xin chào <strong>{customer_name}</strong>,</p>
             <p>Đơn đặt sân của bạn đã được thanh toán thành công. Dưới đây là thông tin vé điện tử và mã QR check-in tại sân:</p>
             <table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px;">
-              <tr><td style="padding: 8px 0; color: #6b7280;">Mã đơn:</td><td style="padding: 8px 0; font-weight: bold;">{booking_code}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280; width: 36%;">Mã đơn:</td><td style="padding: 8px 0; font-weight: bold;">{booking_code}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Chi nhánh:</td><td style="padding: 8px 0; font-weight: bold; color: #065f46;">{branch_name}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Địa điểm:</td><td style="padding: 8px 0; font-weight: bold;">{location_name}</td></tr>
+              {address_row_html}
               <tr><td style="padding: 8px 0; color: #6b7280;">Sân thi đấu:</td><td style="padding: 8px 0; font-weight: bold;">{court_name}</td></tr>
               <tr><td style="padding: 8px 0; color: #6b7280;">Ngày chơi:</td><td style="padding: 8px 0; font-weight: bold;">{play_date}</td></tr>
               <tr><td style="padding: 8px 0; color: #6b7280;">Khung giờ:</td><td style="padding: 8px 0; font-weight: bold;">{start_hour:02d}:00 - {end_hour:02d}:00</td></tr>

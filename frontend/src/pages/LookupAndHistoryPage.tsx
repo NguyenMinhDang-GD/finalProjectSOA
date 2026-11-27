@@ -66,6 +66,12 @@ export const LookupPage: React.FC = () => {
               </span>
             </div>
             <div>Sân: {booking.court_name_snapshot}</div>
+            {(booking.branch_name_snapshot || booking.location_name_snapshot) && (
+              <div>
+                Chi nhánh: <strong>{booking.branch_name_snapshot}</strong> • {booking.location_name_snapshot}
+                {booking.location_address_snapshot ? ` (${booking.location_address_snapshot})` : ''}
+              </div>
+            )}
             <div>
               Thời gian: {booking.play_date} ({String(booking.start_hour).padStart(2, '0')}:00 -{' '}
               {String(booking.end_hour).padStart(2, '0')}:00)
@@ -135,7 +141,14 @@ export const MyBookingsPage: React.FC = () => {
               {orders.map((o) => (
                 <tr key={o.id} className="hover:bg-slate-50">
                   <td className="px-4 py-3 font-mono font-semibold">{o.booking_code}</td>
-                  <td className="px-4 py-3">{o.court_name_snapshot}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium">{o.court_name_snapshot}</div>
+                    {o.branch_name_snapshot && (
+                      <div className="text-xs text-slate-500">
+                        {o.branch_name_snapshot} • {o.location_name_snapshot}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     {o.play_date} ({String(o.start_hour).padStart(2, '0')}:00–{String(o.end_hour).padStart(2, '0')}:00)
                   </td>

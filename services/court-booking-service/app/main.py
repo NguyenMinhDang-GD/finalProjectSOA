@@ -22,6 +22,13 @@ from app.services.booking_service import (
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if engine.dialect.name == "postgresql":
+            await conn.execute(text("ALTER TABLE courts DROP CONSTRAINT IF EXISTS courts_name_key"))
+            await conn.execute(text("ALTER TABLE courts ADD COLUMN IF NOT EXISTS location_id UUID REFERENCES locations(id)"))
+            await conn.execute(text("ALTER TABLE courts ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS branch_name_snapshot VARCHAR(180) NOT NULL DEFAULT ''"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS location_name_snapshot VARCHAR(180) NOT NULL DEFAULT ''"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS location_address_snapshot VARCHAR(300) NOT NULL DEFAULT ''"))
         await conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_court_slot "
@@ -53,7 +60,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Pickleball Court & Booking Service",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/api/bookings/docs",
     openapi_url="/api/bookings/openapi.json",
     lifespan=lifespan,

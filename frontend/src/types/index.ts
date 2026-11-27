@@ -17,8 +17,34 @@ export interface AuthResponse {
   user: User;
 }
 
+export interface LocationItem {
+  id: string;
+  branch_id: string;
+  branch_number: number;
+  branch_name: string;
+  name: string;
+  address: string;
+  court_count: number;
+  created_at: string;
+}
+
+export interface BranchItem {
+  id: string;
+  branch_number: number;
+  title_note: string;
+  display_name: string;
+  locations: LocationItem[];
+  created_at: string;
+}
+
 export interface Court {
   id: string;
+  location_id: string | null;
+  branch_id: string | null;
+  branch_number: number | null;
+  branch_name: string;
+  location_name: string;
+  location_address: string;
   name: string;
   court_type: 'INDOOR' | 'OUTDOOR';
   surface: string;
@@ -64,6 +90,9 @@ export interface BookingOrder {
   customer_email: string;
   court_id: string;
   court_name_snapshot: string;
+  branch_name_snapshot: string;
+  location_name_snapshot: string;
+  location_address_snapshot: string;
   play_date: string;
   start_hour: number;
   end_hour: number;
@@ -102,6 +131,9 @@ export interface CheckinTicket {
   customer_email: string;
   customer_phone: string;
   court_name: string;
+  branch_name: string;
+  location_name: string;
+  location_address: string;
   play_date: string;
   start_hour: number;
   end_hour: number;

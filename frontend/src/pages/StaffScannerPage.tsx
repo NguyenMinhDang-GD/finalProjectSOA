@@ -142,8 +142,8 @@ export const StaffScannerPage: React.FC = () => {
             <p className="text-sm mt-0.5">{scanResult.message}</p>
             {scanResult.ticket && (
               <div className="mt-2 text-xs font-medium bg-white/70 inline-block px-3 py-1.5 rounded-lg border border-emerald-200">
-                Khách: {scanResult.ticket.customer_name} • {scanResult.ticket.court_name} • Mã:{' '}
-                {scanResult.ticket.booking_code}
+                Khách: {scanResult.ticket.customer_name} • {scanResult.ticket.branch_name ? `${scanResult.ticket.branch_name} (${scanResult.ticket.location_name}) • ` : ''}
+                {scanResult.ticket.court_name} • Mã: {scanResult.ticket.booking_code}
               </div>
             )}
           </div>
@@ -228,7 +228,14 @@ export const StaffScannerPage: React.FC = () => {
                   <td className="px-3 py-2.5 font-mono font-semibold">{t.booking_code}</td>
                   <td className="px-3 py-2.5">{t.customer_name}</td>
                   <td className="px-3 py-2.5">
-                    {t.court_name} ({t.play_date} {String(t.start_hour).padStart(2, '0')}h–{String(t.end_hour).padStart(2, '0')}h)
+                    <div className="font-medium">
+                      {t.court_name} ({t.play_date} {String(t.start_hour).padStart(2, '0')}h–{String(t.end_hour).padStart(2, '0')}h)
+                    </div>
+                    {t.branch_name && (
+                      <div className="text-xs text-slate-500">
+                        {t.branch_name} • {t.location_name}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2.5">
                     <span

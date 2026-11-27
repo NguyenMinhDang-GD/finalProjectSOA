@@ -17,21 +17,80 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.events.rabbitmq import EXCHANGE_NAME, rmq_client
+from app.events.rabbitmq import rmq_client
 from app.metrics import BOOKINGS_CREATED_TOTAL, BOOKINGS_EXPIRED_TOTAL, BOOKINGS_PAID_TOTAL
-from app.models import BookingOrder, BookingSlot, Court, PricingRule
+from app.models import BookingOrder, BookingSlot, Branch, Court, Location, PricingRule
 from app.schemas import (
     AdminStatsResponse,
     AvailabilityResponse,
     AvailabilitySlotItem,
     BookingResponse,
+    BranchResponse,
     CourtAvailabilityItem,
     CourtResponse,
     CreateBookingRequest,
+    LocationResponse,
 )
 
 logger = logging.getLogger(__name__)
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def format_branch_name(branch: Branch) -> str:
+    suffix = f" - {branch.title_note.strip()}" if branch.title_note and branch.title_note.strip() else ""
+    return f"Chi nhánh {branch.branch_number}{suffix}"
+
+
+def serialize_location(loc: Location, branch: Branch | None = None) -> LocationResponse:
+    b = branch or loc.branch
+    b_num = b.branch_number if b else 0
+    b_name = format_branch_name(b) if b else ""
+    active_courts = [c for c in (loc.courts or []) if not c.is_deleted]
+    return LocationResponse(
+        id=loc.id,
+        branch_id=loc.branch_id,
+        branch_number=b_num,
+        branch_name=b_name,
+        name=loc.name,
+        address=loc.address,
+        court_count=len(active_courts),
+        created_at=loc.created_at,
+    )
+
+
+def serialize_branch(branch: Branch) -> BranchResponse:
+    active_locs = sorted(
+        [loc for loc in (branch.locations or []) if not loc.is_deleted],
+        key=lambda x: x.created_at,
+    )
+    return BranchResponse(
+        id=branch.id,
+        branch_number=branch.branch_number,
+        title_note=branch.title_note,
+        display_name=format_branch_name(branch),
+        locations=[serialize_location(loc, branch) for loc in active_locs],
+        created_at=branch.created_at,
+    )
+
+
+def serialize_court(court: Court) -> CourtResponse:
+    loc = court.location if court.location and not court.location.is_deleted else None
+    branch = loc.branch if loc and loc.branch and not loc.branch.is_deleted else None
+    return CourtResponse(
+        id=court.id,
+        location_id=loc.id if loc else None,
+        branch_id=branch.id if branch else None,
+        branch_number=branch.branch_number if branch else None,
+        branch_name=format_branch_name(branch) if branch else "",
+        location_name=loc.name if loc else "",
+        location_address=loc.address if loc else "",
+        name=court.name,
+        court_type=court.court_type,
+        surface=court.surface,
+        status=court.status,
+        description=court.description,
+        created_at=court.created_at,
+    )
 
 
 async def _reload_booking(db: AsyncSession, booking_id: uuid.UUID) -> BookingOrder:
@@ -56,10 +115,46 @@ def _generate_booking_code(play_date: date) -> str:
 
 
 async def seed_courts_and_pricing(db: AsyncSession) -> None:
+    existing_branches = await db.scalar(select(func.count()).select_from(Branch))
+    default_loc_1a: Location | None = None
+    default_loc_1b: Location | None = None
+    default_loc_2a: Location | None = None
+
+    if not existing_branches:
+        b1 = Branch(branch_number=1, title_note="Khu vực Nam Sài Gòn")
+        b2 = Branch(branch_number=2, title_note="Khu vực TP. Thủ Đức")
+        db.add_all([b1, b2])
+        await db.flush()
+
+        default_loc_1a = Location(
+            branch_id=b1.id,
+            name="Cơ sở Nguyễn Thị Thập",
+            address="120 Nguyễn Thị Thập, Phường Bình Thuận, Quận 7, TP.HCM",
+        )
+        default_loc_1b = Location(
+            branch_id=b1.id,
+            name="Cơ sở Phú Mỹ Hưng",
+            address="45 Tân Phú, Khu đô thị Phú Mỹ Hưng, Quận 7, TP.HCM",
+        )
+        default_loc_2a = Location(
+            branch_id=b2.id,
+            name="Cơ sở Thảo Điền",
+            address="88 Xuân Thủy, Phường Thảo Điền, TP. Thủ Đức, TP.HCM",
+        )
+        db.add_all([default_loc_1a, default_loc_1b, default_loc_2a])
+        await db.flush()
+    else:
+        default_loc_1a = await db.scalar(
+            select(Location).where(Location.is_deleted.is_(False)).order_by(Location.created_at)
+        )
+
     existing_courts = await db.scalar(select(func.count()).select_from(Court))
-    if not existing_courts:
+    if not existing_courts and default_loc_1a:
+        loc_b = default_loc_1b or default_loc_1a
+        loc_c = default_loc_2a or default_loc_1a
         courts = [
             Court(
+                location_id=default_loc_1a.id,
                 name="Sân 01 - Trong nhà VIP",
                 court_type="INDOOR",
                 surface="Acrylic 7 lớp chuẩn USAPA",
@@ -67,6 +162,7 @@ async def seed_courts_and_pricing(db: AsyncSession) -> None:
                 description="Sân có mái che, hệ thống đèn LED chống chói và khu nghỉ mát.",
             ),
             Court(
+                location_id=default_loc_1a.id,
                 name="Sân 02 - Trong nhà Tiêu chuẩn",
                 court_type="INDOOR",
                 surface="Acrylic 7 lớp chuẩn USAPA",
@@ -74,6 +170,7 @@ async def seed_courts_and_pricing(db: AsyncSession) -> None:
                 description="Sân thi đấu trong nhà phù hợp tập luyện và giao lưu nhóm.",
             ),
             Court(
+                location_id=loc_b.id,
                 name="Sân 03 - Ngoài trời A",
                 court_type="OUTDOOR",
                 surface="Asphalt phủ sơn thể thao chống trượt",
@@ -81,6 +178,7 @@ async def seed_courts_and_pricing(db: AsyncSession) -> None:
                 description="Sân ngoài trời thoáng mát, không gian mở.",
             ),
             Court(
+                location_id=loc_c.id,
                 name="Sân 04 - Ngoài trời B",
                 court_type="OUTDOOR",
                 surface="Asphalt phủ sơn thể thao chống trượt",
@@ -89,16 +187,30 @@ async def seed_courts_and_pricing(db: AsyncSession) -> None:
             ),
         ]
         db.add_all(courts)
+    elif default_loc_1a:
+        # Backfill existing pre-migration courts & bookings if location_id is null
+        await db.execute(
+            update(Court).where(Court.location_id.is_(None)).values(location_id=default_loc_1a.id)
+        )
+        branch_1 = await db.scalar(select(Branch).where(Branch.id == default_loc_1a.branch_id))
+        b_label = format_branch_name(branch_1) if branch_1 else "Chi nhánh 1"
+        await db.execute(
+            update(BookingOrder)
+            .where(BookingOrder.location_name_snapshot == "")
+            .values(
+                branch_name_snapshot=b_label,
+                location_name_snapshot=default_loc_1a.name,
+                location_address_snapshot=default_loc_1a.address,
+            )
+        )
 
     existing_rules = await db.scalar(select(func.count()).select_from(PricingRule))
     if not existing_rules:
         rules = [
-            # Weekday
             PricingRule(court_type="INDOOR", start_hour=5, end_hour=16, is_weekend=False, is_peak_hour=False, price_per_hour=Decimal("150000")),
             PricingRule(court_type="INDOOR", start_hour=16, end_hour=22, is_weekend=False, is_peak_hour=True, price_per_hour=Decimal("220000")),
             PricingRule(court_type="OUTDOOR", start_hour=5, end_hour=16, is_weekend=False, is_peak_hour=False, price_per_hour=Decimal("100000")),
             PricingRule(court_type="OUTDOOR", start_hour=16, end_hour=22, is_weekend=False, is_peak_hour=True, price_per_hour=Decimal("160000")),
-            # Weekend
             PricingRule(court_type="INDOOR", start_hour=5, end_hour=16, is_weekend=True, is_peak_hour=False, price_per_hour=Decimal("180000")),
             PricingRule(court_type="INDOOR", start_hour=16, end_hour=22, is_weekend=True, is_peak_hour=True, price_per_hour=Decimal("250000")),
             PricingRule(court_type="OUTDOOR", start_hour=5, end_hour=16, is_weekend=True, is_peak_hour=False, price_per_hour=Decimal("120000")),
@@ -113,14 +225,36 @@ def _find_slot_price(rules: list[PricingRule], court_type: str, is_weekend: bool
     for r in rules:
         if r.court_type == court_type and r.is_weekend == is_weekend and r.start_hour <= hour < r.end_hour:
             return r.price_per_hour, r.is_peak_hour
-    # Fallback default
     is_peak = hour >= 16
     return (Decimal("200000") if is_peak else Decimal("120000")), is_peak
 
 
-async def get_availability(db: AsyncSession, play_date: date) -> AvailabilityResponse:
+async def get_availability(
+    db: AsyncSession,
+    play_date: date,
+    branch_id: uuid.UUID | None = None,
+    location_id: uuid.UUID | None = None,
+) -> AvailabilityResponse:
     is_weekend = play_date.weekday() >= 5
-    courts = (await db.scalars(select(Court).order_by(Court.name))).all()
+    stmt = (
+        select(Court)
+        .options(selectinload(Court.location).selectinload(Location.branch))
+        .where(Court.is_deleted.is_(False))
+        .order_by(Court.name)
+    )
+    if location_id:
+        stmt = stmt.where(Court.location_id == location_id)
+    elif branch_id:
+        stmt = stmt.join(Location, Court.location_id == Location.id).where(
+            Location.branch_id == branch_id,
+            Location.is_deleted.is_(False),
+        )
+
+    courts = [
+        c
+        for c in (await db.scalars(stmt)).all()
+        if (c.location is None) or (not c.location.is_deleted and (c.location.branch is None or not c.location.branch.is_deleted))
+    ]
     rules = (await db.scalars(select(PricingRule))).all()
     slots_rows = (
         await db.scalars(
@@ -160,7 +294,7 @@ async def get_availability(db: AsyncSession, play_date: date) -> AvailabilityRes
                     status=slot_status,  # type: ignore[arg-type]
                 )
             )
-        court_items.append(CourtAvailabilityItem(court=CourtResponse.model_validate(court), slots=items))
+        court_items.append(CourtAvailabilityItem(court=serialize_court(court), slots=items))
 
     return AvailabilityResponse(play_date=play_date, is_weekend=is_weekend, courts=court_items)
 
@@ -185,19 +319,23 @@ async def create_booking(
             ),
         )
 
-    court = await db.scalar(select(Court).where(Court.id == payload.court_id))
+    court = await db.scalar(
+        select(Court)
+        .options(selectinload(Court.location).selectinload(Location.branch))
+        .where(Court.id == payload.court_id, Court.is_deleted.is_(False))
+    )
     if not court:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sân")
     if court.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sân hiện đang bảo trì")
 
+    court_info = serialize_court(court)
     is_weekend = payload.play_date.weekday() >= 5
     rules = (await db.scalars(select(PricingRule))).all()
 
     booking_code = _generate_booking_code(payload.play_date)
     acquired_keys: list[str] = []
 
-    # Layer 1: Redis Distributed TTL Lock (prevents race condition before DB write)
     try:
         for h in payload.hours:
             key = _slot_lock_key(court.id, payload.play_date, h)
@@ -209,7 +347,6 @@ async def create_booking(
                 )
             acquired_keys.append(key)
 
-        # Layer 2: Calculate authoritative prices & persist with Partial Unique Index guard
         now_utc = datetime.now(timezone.utc)
         expires_at = now_utc + timedelta(seconds=settings.lock_ttl_seconds)
         total_amount = Decimal("0")
@@ -238,6 +375,9 @@ async def create_booking(
             customer_email=payload.customer_email.strip().lower(),
             court_id=court.id,
             court_name_snapshot=court.name,
+            branch_name_snapshot=court_info.branch_name,
+            location_name_snapshot=court_info.location_name,
+            location_address_snapshot=court_info.location_address,
             play_date=payload.play_date,
             start_hour=payload.hours[0],
             end_hour=payload.hours[-1] + 1,
@@ -306,7 +446,11 @@ async def release_booking_slots(
 
 async def confirm_booking_paid(booking_code: str, redis_client: Redis) -> None:
     async with AsyncSessionLocal() as db:
-        order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code))
+        order = await db.scalar(
+            select(BookingOrder)
+            .options(selectinload(BookingOrder.slots))
+            .where(BookingOrder.booking_code == booking_code)
+        )
         if not order:
             logger.warning("payment.succeeded received for unknown booking_code=%s", booking_code)
             return
@@ -353,7 +497,9 @@ async def run_expiration_worker(redis_client: Redis, stop_event: asyncio.Event) 
                 now_utc = datetime.now(timezone.utc)
                 expired_orders = (
                     await db.scalars(
-                        select(BookingOrder).where(
+                        select(BookingOrder)
+                        .options(selectinload(BookingOrder.slots))
+                        .where(
                             BookingOrder.status == "PENDING_PAYMENT",
                             BookingOrder.expires_at < now_utc,
                         )
@@ -395,7 +541,10 @@ async def get_admin_stats(db: AsyncSession) -> AdminStatsResponse:
         or Decimal("0")
     )
     active_courts = (
-        await db.scalar(select(func.count()).select_from(Court).where(Court.status == "ACTIVE")) or 0
+        await db.scalar(
+            select(func.count()).select_from(Court).where(Court.status == "ACTIVE", Court.is_deleted.is_(False))
+        )
+        or 0
     )
     return AdminStatsResponse(
         total_bookings=total,

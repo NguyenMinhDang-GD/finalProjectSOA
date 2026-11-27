@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CalendarDays, Clock, Flame, Info, RefreshCw, Sparkles } from 'lucide-react';
+import { Building2, CalendarDays, Clock, Flame, Info, MapPin, RefreshCw, Sparkles } from 'lucide-react';
 import { apiRequest, formatVND, todayVN } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import { AvailabilityResponse, BookingOrder, CourtAvailability } from '../types';
+import { AvailabilityResponse, BookingOrder, BranchItem, CourtAvailability } from '../types';
 
 export const BookingPage: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
   const [playDate, setPlayDate] = useState<string>(todayVN());
+  const [branches, setBranches] = useState<BranchItem[]>([]);
+  const [filterBranchId, setFilterBranchId] = useState<string>('');
+  const [filterLocationId, setFilterLocationId] = useState<string>('');
+
   const [availability, setAvailability] = useState<AvailabilityResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
@@ -30,24 +34,38 @@ export const BookingPage: React.FC = () => {
     }
   }, [user]);
 
-  const loadAvailability = async (targetDate: string) => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await apiRequest<AvailabilityResponse>(`/api/courts/availability?date=${targetDate}`);
-      setAvailability(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tải được lịch sân');
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    apiRequest<BranchItem[]>('/api/branches')
+      .then((data) => setBranches(data))
+      .catch(() => undefined);
+  }, []);
+
+  const loadAvailability = useCallback(
+    async (targetDate: string, branchId: string, locationId: string) => {
+      setLoading(true);
+      setError('');
+      try {
+        const params = new URLSearchParams({ date: targetDate });
+        if (locationId) params.set('location_id', locationId);
+        else if (branchId) params.set('branch_id', branchId);
+        const data = await apiRequest<AvailabilityResponse>(`/api/courts/availability?${params.toString()}`);
+        setAvailability(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Không tải được lịch sân');
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     setSelectedCourtId(null);
     setSelectedHours([]);
-    loadAvailability(playDate);
-  }, [playDate]);
+    loadAvailability(playDate, filterBranchId, filterLocationId);
+  }, [playDate, filterBranchId, filterLocationId, loadAvailability]);
+
+  const activeFilterBranch = branches.find((b) => b.id === filterBranchId) || null;
 
   const handleToggleSlot = (courtItem: CourtAvailability, hour: number, status: string) => {
     if (status !== 'AVAILABLE') return;
@@ -61,7 +79,6 @@ export const BookingPage: React.FC = () => {
 
     if (selectedHours.includes(hour)) {
       const next = selectedHours.filter((h) => h !== hour).sort((a, b) => a - b);
-      // Ensure remaining selection stays contiguous
       if (next.length > 1) {
         const isContiguous = next.every((val, idx) => idx === 0 || val === next[idx - 1] + 1);
         if (!isContiguous) {
@@ -116,7 +133,7 @@ export const BookingPage: React.FC = () => {
       navigate(`/checkout/${order.booking_code}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Đặt sân thất bại');
-      loadAvailability(playDate);
+      loadAvailability(playDate, filterBranchId, filterLocationId);
     } finally {
       setSubmitting(false);
     }
@@ -124,14 +141,14 @@ export const BookingPage: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="bg-gradient-to-r from-emerald-800 to-teal-700 text-white rounded-2xl p-6 mb-6 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="bg-gradient-to-r from-emerald-800 to-teal-700 text-white rounded-2xl p-6 mb-5 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <span className="inline-flex items-center gap-1.5 bg-lime-400/20 text-lime-300 text-xs font-semibold px-2.5 py-1 rounded-full mb-2">
-            <Sparkles className="w-3.5 h-3.5" /> Đặt sân trực tuyến 24/7 • Nhận vé QR qua Email
+            <Sparkles className="w-3.5 h-3.5" /> Đặt sân trực tuyến 24/7 • Nhận vé QR kèm Địa chỉ sân qua Email
           </span>
-          <h1 className="text-2xl font-bold">Đặt sân Pickleball theo khung giờ</h1>
+          <h1 className="text-2xl font-bold">Đặt sân Pickleball theo Chi nhánh & Khung giờ</h1>
           <p className="text-sm text-emerald-100 mt-1">
-            Chọn ngày, chọn một hoặc nhiều slot 60 phút liên tiếp, chuyển khoản VietQR và nhận mã QR vào sân ngay.
+            Chọn chi nhánh, địa điểm và các slot 60 phút liên tiếp, chuyển khoản VietQR và nhận mã QR vào sân ngay.
           </p>
         </div>
 
@@ -148,12 +165,57 @@ export const BookingPage: React.FC = () => {
             />
           </div>
           <button
-            onClick={() => loadAvailability(playDate)}
+            onClick={() => loadAvailability(playDate, filterBranchId, filterLocationId)}
             className="ml-2 p-2 rounded-lg hover:bg-white/15 transition"
             title="Làm mới lịch sân"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
+        </div>
+      </div>
+
+      {/* Branch & Location Filter Bar */}
+      <div className="bg-white px-4 py-3 rounded-xl border border-slate-200 mb-4 flex flex-wrap items-center gap-3 shadow-sm">
+        <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+          <Building2 className="w-4 h-4 text-emerald-700" />
+          <span>Chi nhánh:</span>
+          <select
+            value={filterBranchId}
+            onChange={(e) => {
+              setFilterBranchId(e.target.value);
+              setFilterLocationId('');
+            }}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="">Tất cả chi nhánh</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.display_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+          <MapPin className="w-4 h-4 text-emerald-700" />
+          <span>Địa điểm:</span>
+          <select
+            value={filterLocationId}
+            onChange={(e) => setFilterLocationId(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="">
+              {activeFilterBranch ? `Tất cả địa điểm thuộc ${activeFilterBranch.display_name}` : 'Tất cả địa điểm'}
+            </option>
+            {(activeFilterBranch
+              ? activeFilterBranch.locations
+              : branches.flatMap((b) => b.locations)
+            ).map((loc) => (
+              <option key={loc.id} value={loc.id}>
+                {loc.branch_name} • {loc.name}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -202,12 +264,16 @@ export const BookingPage: React.FC = () => {
             <div className="bg-white rounded-2xl p-10 text-center text-slate-500 border border-slate-200">
               Đang tải lịch trống các sân...
             </div>
+          ) : availability?.courts.length === 0 ? (
+            <div className="bg-white rounded-2xl p-10 text-center text-slate-500 border border-slate-200">
+              Chưa có sân hoạt động tại chi nhánh / địa điểm đang chọn.
+            </div>
           ) : (
             availability?.courts.map((item) => (
               <div key={item.court.id} className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h2 className="text-base font-bold text-slate-900">{item.court.name}</h2>
                       <span
                         className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
@@ -218,13 +284,26 @@ export const BookingPage: React.FC = () => {
                       >
                         {item.court.court_type === 'INDOOR' ? 'Trong nhà (Mái che)' : 'Ngoài trời'}
                       </span>
+                      {item.court.branch_name && (
+                        <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          {item.court.branch_name} • {item.court.location_name}
+                        </span>
+                      )}
                       {item.court.status === 'MAINTENANCE' && (
                         <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">
                           Đang bảo trì
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-500 mt-0.5">{item.court.description}</p>
+                    {item.court.location_address && (
+                      <p className="text-xs text-slate-600 mt-1 flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>{item.court.location_address}</span>
+                      </p>
+                    )}
+                    {item.court.description && (
+                      <p className="text-xs text-slate-500 mt-0.5">{item.court.description}</p>
+                    )}
                   </div>
                 </div>
 
@@ -287,8 +366,16 @@ export const BookingPage: React.FC = () => {
 
           {selectedCourt && selectedHours.length > 0 ? (
             <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 mb-4 text-sm space-y-1.5">
-              <div className="font-bold text-emerald-900">{selectedCourt.court.name}</div>
-              <div className="text-emerald-800">
+              <div className="font-bold text-emerald-950">{selectedCourt.court.name}</div>
+              {selectedCourt.court.branch_name && (
+                <div className="text-xs font-semibold text-emerald-800">
+                  {selectedCourt.court.branch_name} • {selectedCourt.court.location_name}
+                </div>
+              )}
+              {selectedCourt.court.location_address && (
+                <div className="text-xs text-emerald-700">{selectedCourt.court.location_address}</div>
+              )}
+              <div className="text-emerald-800 pt-1">
                 Ngày chơi: <span className="font-semibold">{playDate}</span>
               </div>
               <div className="text-emerald-800">

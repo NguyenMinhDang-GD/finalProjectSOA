@@ -13,6 +13,9 @@ class TicketResponse(BaseModel):
     customer_email: str
     customer_phone: str
     court_name: str
+    branch_name: str = ""
+    location_name: str = ""
+    location_address: str = ""
     play_date: date
     start_hour: int
     end_hour: int

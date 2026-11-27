@@ -140,6 +140,24 @@ export const CheckoutPage: React.FC = () => {
                 <span className="text-slate-500">Mã đặt sân:</span>
                 <span className="font-bold text-slate-900">{booking.booking_code}</span>
               </div>
+              {booking.branch_name_snapshot && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Chi nhánh:</span>
+                  <span className="font-semibold text-emerald-800">{booking.branch_name_snapshot}</span>
+                </div>
+              )}
+              {booking.location_name_snapshot && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Địa điểm:</span>
+                  <span className="font-semibold">{booking.location_name_snapshot}</span>
+                </div>
+              )}
+              {booking.location_address_snapshot && (
+                <div className="flex justify-between gap-4">
+                  <span className="text-slate-500 shrink-0">Địa chỉ:</span>
+                  <span className="font-medium text-right text-slate-700">{booking.location_address_snapshot}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-slate-500">Sân:</span>
                 <span className="font-semibold">{booking.court_name_snapshot}</span>
@@ -261,6 +279,18 @@ export const CheckoutPage: React.FC = () => {
 
             <div className="space-y-4">
               <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2 text-sm">
+                {booking.branch_name_snapshot && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Chi nhánh:</span>
+                    <span className="font-semibold text-emerald-800">{booking.branch_name_snapshot}</span>
+                  </div>
+                )}
+                {booking.location_name_snapshot && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Địa điểm:</span>
+                    <span className="font-semibold">{booking.location_name_snapshot}</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-slate-500">Sân:</span>
                   <span className="font-semibold">{booking.court_name_snapshot}</span>

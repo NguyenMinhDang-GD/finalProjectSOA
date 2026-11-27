@@ -9,7 +9,48 @@ CourtType = Literal["INDOOR", "OUTDOOR"]
 CourtStatus = Literal["ACTIVE", "MAINTENANCE"]
 
 
+class BranchCreateRequest(BaseModel):
+    title_note: str = Field(default="", max_length=150)
+
+
+class BranchUpdateRequest(BaseModel):
+    title_note: str = Field(default="", max_length=150)
+
+
+class LocationCreateRequest(BaseModel):
+    branch_id: uuid.UUID
+    name: str = Field(min_length=2, max_length=150)
+    address: str = Field(min_length=3, max_length=300)
+
+
+class LocationUpdateRequest(BaseModel):
+    branch_id: uuid.UUID | None = None
+    name: str | None = Field(default=None, min_length=2, max_length=150)
+    address: str | None = Field(default=None, min_length=3, max_length=300)
+
+
+class LocationResponse(BaseModel):
+    id: uuid.UUID
+    branch_id: uuid.UUID
+    branch_number: int
+    branch_name: str
+    name: str
+    address: str
+    court_count: int = 0
+    created_at: datetime
+
+
+class BranchResponse(BaseModel):
+    id: uuid.UUID
+    branch_number: int
+    title_note: str
+    display_name: str
+    locations: list[LocationResponse] = []
+    created_at: datetime
+
+
 class CourtCreateRequest(BaseModel):
+    location_id: uuid.UUID
     name: str = Field(min_length=2, max_length=120)
     court_type: CourtType
     surface: str = Field(default="Acrylic 7 lớp chuẩn thi đấu", max_length=80)
@@ -17,6 +58,7 @@ class CourtCreateRequest(BaseModel):
 
 
 class CourtUpdateRequest(BaseModel):
+    location_id: uuid.UUID | None = None
     name: str | None = Field(default=None, min_length=2, max_length=120)
     court_type: CourtType | None = None
     surface: str | None = Field(default=None, max_length=80)
@@ -25,15 +67,25 @@ class CourtUpdateRequest(BaseModel):
 
 
 class CourtResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: uuid.UUID
+    location_id: uuid.UUID | None = None
+    branch_id: uuid.UUID | None = None
+    branch_number: int | None = None
+    branch_name: str = ""
+    location_name: str = ""
+    location_address: str = ""
     name: str
     court_type: str
     surface: str
     status: str
     description: str
     created_at: datetime
+
+
+class DeleteActionResponse(BaseModel):
+    deleted: bool
+    mode: Literal["hard", "soft"]
+    message: str
 
 
 class PricingRuleResponse(BaseModel):
@@ -116,6 +168,9 @@ class BookingResponse(BaseModel):
     customer_email: str
     court_id: uuid.UUID
     court_name_snapshot: str
+    branch_name_snapshot: str = ""
+    location_name_snapshot: str = ""
+    location_address_snapshot: str = ""
     play_date: date
     start_hour: int
     end_hour: int
