@@ -21,6 +21,7 @@ class TicketResponse(BaseModel):
     end_hour: int
     total_amount: float
     qr_payload: str
+    booking_revision: int = 1
     status: str
     checked_in_by: str | None
     checked_in_at: datetime | None

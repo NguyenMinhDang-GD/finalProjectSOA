@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.schemas import (
     ApproveRefundRequest,
+    CashCollectRequest,
     CreatePaymentRequest,
     CreateRefundRequest,
     ExecuteRefundRequest,
@@ -26,6 +27,7 @@ from app.schemas import (
     RefundResponse,
     RejectRefundRequest,
     SimulatePaymentRequest,
+    SyncRevisionRequest,
     UpdateReconciliationRequest,
 )
 from app.security import (
@@ -37,6 +39,8 @@ from app.security import (
 )
 from app.services.payment_service import (
     approve_refund,
+    check_reschedule_eligibility,
+    collect_simulated_cash,
     confirm_payment_idempotent,
     create_or_get_payment,
     create_refund_request,
@@ -45,6 +49,7 @@ from app.services.payment_service import (
     reject_refund,
     retry_failed_payment,
     simulate_payment_outcome,
+    sync_payment_revision,
     update_reconciliation_case,
     verify_refund_callback_signature,
     verify_webhook_signature,
@@ -239,6 +244,46 @@ async def internal_create_refund(
         admin_override_reason=payload.admin_override_reason,
         auto_approve=payload.auto_approve,
     )
+
+
+@router.post("/staff/cash-collect", response_model=PaymentResponse)
+async def staff_collect_cash(
+    payload: CashCollectRequest,
+    claims: dict = Depends(require_roles("STAFF", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await collect_simulated_cash(
+        db,
+        booking_code=payload.booking_code,
+        amount=payload.amount,
+        idempotency_key=payload.idempotency_key,
+        staff_email=str(claims.get("email") or "staff"),
+        note=payload.note,
+    )
+
+
+@router.post("/internal/{booking_code}/sync-revision")
+async def internal_sync_revision(
+    booking_code: str,
+    payload: SyncRevisionRequest,
+    _: None = Depends(verify_internal_key),
+    db: AsyncSession = Depends(get_db),
+):
+    return await sync_payment_revision(
+        db,
+        booking_code=booking_code,
+        expected_amount=payload.expected_amount,
+        booking_revision=payload.booking_revision,
+    )
+
+
+@router.get("/internal/{booking_code}/reschedule-check")
+async def internal_reschedule_check(
+    booking_code: str,
+    _: None = Depends(verify_internal_key),
+    db: AsyncSession = Depends(get_db),
+):
+    return await check_reschedule_eligibility(db, booking_code)
 
 
 # ----------------- ADMIN FINANCIAL MANAGEMENT -----------------

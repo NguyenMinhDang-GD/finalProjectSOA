@@ -53,6 +53,7 @@ class PaymentAttemptResponse(BaseModel):
     booking_code: str
     attempt_number: int
     provider: str
+    payment_method: str = "SIMULATED_ONLINE"
     provider_tx_id: str | None
     outcome: str
     expected_amount: int
@@ -81,6 +82,10 @@ class PaymentResponse(BaseModel):
     bank_account_no: str
     bank_account_name: str
     provider: str
+    payment_method: str = "SIMULATED_ONLINE"
+    booking_revision: int = 1
+    collected_by: str | None = None
+    collected_at: datetime | None = None
     provider_tx_id: str | None
     status: str
     attempt_count: int = 0
@@ -203,3 +208,15 @@ class FinancialAuditLogResponse(BaseModel):
     reason: str | None
     metadata_json: dict
     created_at: datetime
+
+
+class CashCollectRequest(BaseModel):
+    booking_code: str = Field(min_length=4, max_length=40)
+    amount: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=3, max_length=60)
+    note: str | None = Field(default=None, max_length=300)
+
+
+class SyncRevisionRequest(BaseModel):
+    expected_amount: int = Field(gt=0)
+    booking_revision: int = Field(ge=1)

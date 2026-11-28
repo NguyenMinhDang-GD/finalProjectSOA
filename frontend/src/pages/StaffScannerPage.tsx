@@ -5,20 +5,39 @@ import {
   CameraOff,
   CheckCircle2,
   ClipboardCheck,
+  Coins,
+  PlusCircle,
   QrCode,
   RefreshCw,
   ShieldAlert,
+  UserCheck,
+  UserX,
+  Wrench,
 } from 'lucide-react';
-import { apiRequest, formatDateVN, formatHourRange } from '../api/client';
+import { apiRequest, formatDateVN, formatHourRange, formatVND } from '../api/client';
 import { BrandMark } from '../components/brand/BrandLogo';
 import { Button } from '../components/ui/Button';
 import { AlertBanner, EmptyState } from '../components/ui/FeedbackStates';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
-import { CheckinTicket, ScanQRResponse } from '../types';
+import {
+  AvailabilityResponse,
+  BookingOrder,
+  CheckinTicket,
+  CourtAvailability,
+  MaintenanceBlock,
+  ScanQRResponse,
+} from '../types';
+
+type StaffTab = 'scanner' | 'operations' | 'walkin' | 'maintenance';
+
+function todayVN(): string {
+  return new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
 
 export const StaffScannerPage: React.FC = () => {
   const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<StaffTab>('scanner');
   const [manualInput, setManualInput] = useState('');
   const [bypassTimeCheck, setBypassTimeCheck] = useState(false);
   const [cameraActive, setCameraActive] = useState(false);
@@ -33,6 +52,26 @@ export const StaffScannerPage: React.FC = () => {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const busyRef = useRef(false);
 
+  const [bookings, setBookings] = useState<BookingOrder[]>([]);
+  const [opFeedback, setOpFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [opFilter, setOpFilter] = useState('');
+  const [opReason, setOpReason] = useState('Thao tác vận hành tại quầy');
+  const [earlyCompletion, setEarlyCompletion] = useState(false);
+  const [opBusyCode, setOpBusyCode] = useState<string | null>(null);
+
+  const [walkInDate, setWalkInDate] = useState(todayVN());
+  const [availability, setAvailability] = useState<CourtAvailability[]>([]);
+  const [walkInCourtId, setWalkInCourtId] = useState('');
+  const [walkInHours, setWalkInHours] = useState<number[]>([]);
+  const [walkInName, setWalkInName] = useState('');
+  const [walkInPhone, setWalkInPhone] = useState('');
+  const [walkInEmail, setWalkInEmail] = useState('');
+  const [collectCashNow, setCollectCashNow] = useState(true);
+  const [walkInBusy, setWalkInBusy] = useState(false);
+
+  const [maintenanceList, setMaintenanceList] = useState<MaintenanceBlock[]>([]);
+  const [maintenanceDate, setMaintenanceDate] = useState(todayVN());
+
   const loadLogs = useCallback(async () => {
     setLogsError('');
     try {
@@ -43,14 +82,57 @@ export const StaffScannerPage: React.FC = () => {
     }
   }, []);
 
+  const loadOperations = useCallback(async () => {
+    try {
+      const data = await apiRequest<BookingOrder[]>('/api/bookings/admin/list');
+      setBookings(data);
+    } catch (err) {
+      setOpFeedback({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Không tải được danh sách đơn đặt sân',
+      });
+    }
+  }, []);
+
+  const loadAvailability = useCallback(async (date: string) => {
+    try {
+      const data = await apiRequest<AvailabilityResponse>(`/api/courts/availability?date=${date}`);
+      setAvailability(data.courts);
+      if (data.courts.length > 0 && !data.courts.some((c) => c.court.id === walkInCourtId)) {
+        setWalkInCourtId(data.courts[0].court.id);
+      }
+    } catch (err) {
+      setOpFeedback({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Không tải được lịch trống sân',
+      });
+    }
+  }, [walkInCourtId]);
+
+  const loadMaintenance = useCallback(async (date: string) => {
+    try {
+      const query = date ? `?play_date=${date}` : '';
+      const data = await apiRequest<MaintenanceBlock[]>(`/api/bookings/maintenance${query}`);
+      setMaintenanceList(data);
+    } catch (err) {
+      setOpFeedback({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Không tải được lịch bảo trì',
+      });
+    }
+  }, []);
+
   useEffect(() => {
     loadLogs();
+    loadOperations();
+    loadAvailability(walkInDate);
+    loadMaintenance(maintenanceDate);
     return () => {
       if (scannerRef.current && scannerRef.current.isScanning) {
         scannerRef.current.stop().catch(() => undefined);
       }
     };
-  }, [loadLogs]);
+  }, [loadLogs, loadOperations, loadAvailability, loadMaintenance, walkInDate, maintenanceDate]);
 
   const submitScan = async (qrData: string) => {
     if (!qrData.trim() || busyRef.current) return;
@@ -166,6 +248,45 @@ export const StaffScannerPage: React.FC = () => {
         </div>
       </header>
 
+      {/* Staff Workspace Tabs */}
+      <nav aria-label="Phân hệ vận hành nhân viên" className="flex flex-wrap gap-2">
+        {[
+          { key: 'scanner' as StaffTab, label: 'Quét QR Check-in', icon: QrCode },
+          { key: 'operations' as StaffTab, label: `Vận hành đơn & Tiền mặt (${bookings.length})`, icon: Coins },
+          { key: 'walkin' as StaffTab, label: 'Đặt sân Walk-in', icon: PlusCircle },
+          { key: 'maintenance' as StaffTab, label: `Lịch bảo trì (${maintenanceList.length})`, icon: Wrench },
+        ].map((item) => {
+          const Icon = item.icon;
+          const active = activeTab === item.key;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setActiveTab(item.key)}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border transition cursor-pointer ${
+                active
+                  ? 'bg-court text-white border-court shadow-sm'
+                  : 'bg-white text-charcoal border-[#D4D6CD] hover:border-court'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {opFeedback && (
+        <AlertBanner
+          tone={opFeedback.ok ? 'success' : 'error'}
+          title={opFeedback.ok ? 'Thao tác thành công' : 'Có lỗi xảy ra'}
+        >
+          {opFeedback.message}
+        </AlertBanner>
+      )}
+
+      {activeTab === 'scanner' && (
+        <>
       {/* Immediate Result Feedback Banner */}
       {scanResult && (
         <div
@@ -345,6 +466,447 @@ export const StaffScannerPage: React.FC = () => {
           </div>
         )}
       </section>
+        </>
+      )}
+
+      {activeTab === 'operations' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] p-5 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-bold text-charcoal">Vận hành đơn, Thu tiền mặt (Demo) & Trạng thái</h2>
+              <p className="text-xs text-court-muted">Thu tiền mặt tại quầy, đánh dấu No-Show (sau grace 30p), hoặc Hoàn tất lượt chơi.</p>
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                type="text"
+                value={opFilter}
+                onChange={(e) => setOpFilter(e.target.value)}
+                placeholder="Lọc mã đơn / tên / SĐT..."
+                className="rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+              <Button variant="secondary" size="sm" onClick={loadOperations}>
+                <RefreshCw className="w-4 h-4" />
+                <span>Làm mới</span>
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-warm-white p-3.5 rounded-xl border border-[#ECEBE2]">
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Lý do thao tác (No-Show / Hoàn tất / Tiền mặt)</label>
+              <input
+                type="text"
+                value={opReason}
+                onChange={(e) => setOpReason(e.target.value)}
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm bg-white"
+              />
+            </div>
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-charcoal self-end pb-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={earlyCompletion}
+                onChange={(e) => setEarlyCompletion(e.target.checked)}
+                className="w-4 h-4 rounded accent-court"
+              />
+              <span>Cho phép hoàn tất sớm (early_completion)</span>
+            </label>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+                <tr>
+                  <th className="px-4 py-3">Mã đơn</th>
+                  <th className="px-4 py-3">Nguồn</th>
+                  <th className="px-4 py-3">Khách</th>
+                  <th className="px-4 py-3">Ngày & Giờ</th>
+                  <th className="px-4 py-3">Tổng tiền</th>
+                  <th className="px-4 py-3">Trạng thái</th>
+                  <th className="px-4 py-3">Thao tác quầy</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#ECEBE2]">
+                {bookings
+                  .filter((b) => {
+                    if (!opFilter.trim()) return true;
+                    const q = opFilter.trim().toLowerCase();
+                    return (
+                      b.booking_code.toLowerCase().includes(q) ||
+                      b.customer_name.toLowerCase().includes(q) ||
+                      b.customer_phone.toLowerCase().includes(q)
+                    );
+                  })
+                  .slice(0, 40)
+                  .map((b) => (
+                    <tr key={b.id}>
+                      <td className="px-4 py-3 font-mono font-bold text-charcoal">
+                        {b.booking_code}{' '}
+                        <span className="text-[11px] font-normal text-court-muted">v{b.booking_revision || 1}</span>
+                      </td>
+                      <td className="px-4 py-3 text-xs font-semibold">
+                        <span className="px-2 py-0.5 rounded bg-[#F1F2EC] text-charcoal">{b.booking_source || 'ONLINE'}</span>
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        <div className="font-semibold text-charcoal">{b.customer_name}</div>
+                        <div className="text-court-muted">{b.customer_phone}</div>
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        <div>{formatDateVN(b.play_date)}</div>
+                        <div className="text-court-muted">{formatHourRange(b.start_hour, b.end_hour)}</div>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs">{formatVND(b.total_amount)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <StatusBadge status={b.status} />
+                          {b.admission_status && (
+                            <span className="text-[10px] font-mono text-court-muted">{b.admission_status}</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1.5">
+                          {b.status === 'PENDING_PAYMENT' && (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              disabled={opBusyCode === b.booking_code}
+                              onClick={async () => {
+                                setOpBusyCode(b.booking_code);
+                                try {
+                                  await apiRequest('/api/payments/staff/cash-collect', {
+                                    method: 'POST',
+                                    body: JSON.stringify({
+                                      booking_code: b.booking_code,
+                                      amount: b.total_amount,
+                                      idempotency_key: `CASH-${b.booking_code}-${Date.now()}`,
+                                      note: opReason || 'Thu tiền mặt tại quầy',
+                                    }),
+                                  });
+                                  setOpFeedback({
+                                    ok: true,
+                                    message: `Đã thu tiền mặt (Demo) cho đơn ${b.booking_code}. Hệ thống đang xác nhận vé.`,
+                                  });
+                                  await Promise.all([loadOperations(), loadLogs()]);
+                                } catch (err) {
+                                  setOpFeedback({
+                                    ok: false,
+                                    message: err instanceof Error ? err.message : 'Thu tiền mặt thất bại',
+                                  });
+                                } finally {
+                                  setOpBusyCode(null);
+                                }
+                              }}
+                            >
+                              <Coins className="w-3.5 h-3.5" />
+                              <span>Thu tiền mặt</span>
+                            </Button>
+                          )}
+                          {b.status === 'PAID' && b.admission_status !== 'ADMITTED' && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={opBusyCode === b.booking_code}
+                              onClick={async () => {
+                                setOpBusyCode(b.booking_code);
+                                try {
+                                  await apiRequest(`/api/bookings/staff/${b.booking_code}/no-show`, {
+                                    method: 'POST',
+                                    body: JSON.stringify({
+                                      reason: opReason || 'Khách không đến sau giờ quy định',
+                                    }),
+                                  });
+                                  setOpFeedback({
+                                    ok: true,
+                                    message: `Đã đánh dấu NO_SHOW cho đơn ${b.booking_code}.`,
+                                  });
+                                  await Promise.all([loadOperations(), loadLogs()]);
+                                } catch (err) {
+                                  setOpFeedback({
+                                    ok: false,
+                                    message: err instanceof Error ? err.message : 'Không thể đánh dấu No-Show',
+                                  });
+                                } finally {
+                                  setOpBusyCode(null);
+                                }
+                              }}
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                              <span>No-Show</span>
+                            </Button>
+                          )}
+                          {b.status === 'PAID' && b.admission_status === 'ADMITTED' && (
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              disabled={opBusyCode === b.booking_code}
+                              onClick={async () => {
+                                setOpBusyCode(b.booking_code);
+                                try {
+                                  await apiRequest(`/api/bookings/staff/${b.booking_code}/complete`, {
+                                    method: 'POST',
+                                    body: JSON.stringify({
+                                      reason: opReason || 'Khách đã hoàn tất lượt chơi',
+                                      early_completion: earlyCompletion,
+                                    }),
+                                  });
+                                  setOpFeedback({
+                                    ok: true,
+                                    message: `Đã hoàn tất lượt chơi cho đơn ${b.booking_code}.`,
+                                  });
+                                  await Promise.all([loadOperations(), loadLogs()]);
+                                } catch (err) {
+                                  setOpFeedback({
+                                    ok: false,
+                                    message: err instanceof Error ? err.message : 'Không thể hoàn tất đơn',
+                                  });
+                                } finally {
+                                  setOpBusyCode(null);
+                                }
+                              }}
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>Hoàn tất</span>
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'walkin' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] p-5 space-y-5">
+          <div>
+            <h2 className="font-display text-lg font-bold text-charcoal">Tạo đơn Walk-in tại quầy</h2>
+            <p className="text-xs text-court-muted">Cho phép đặt sân trong khung giờ hiện tại nếu giờ kết thúc chưa qua.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Ngày chơi</label>
+              <input
+                type="date"
+                value={walkInDate}
+                onChange={(e) => {
+                  setWalkInDate(e.target.value);
+                  setWalkInHours([]);
+                  loadAvailability(e.target.value);
+                }}
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Chọn sân</label>
+              <select
+                value={walkInCourtId}
+                onChange={(e) => {
+                  setWalkInCourtId(e.target.value);
+                  setWalkInHours([]);
+                }}
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm bg-white"
+              >
+                {availability.map((c) => (
+                  <option key={c.court.id} value={c.court.id}>
+                    {c.court.name} ({c.court.court_type})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-end">
+              <Button variant="secondary" size="sm" onClick={() => loadAvailability(walkInDate)}>
+                <RefreshCw className="w-4 h-4" />
+                <span>Tải lại lịch sân</span>
+              </Button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-court-muted mb-2">Chọn khung giờ trống</label>
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
+              {(availability.find((c) => c.court.id === walkInCourtId)?.slots || []).map((slot) => {
+                const selected = walkInHours.includes(slot.start_hour);
+                const disabled = slot.status !== 'AVAILABLE';
+                return (
+                  <button
+                    key={slot.start_hour}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() =>
+                      setWalkInHours((prev) =>
+                        prev.includes(slot.start_hour)
+                          ? prev.filter((h) => h !== slot.start_hour)
+                          : [...prev, slot.start_hour].sort((a, b) => a - b)
+                      )
+                    }
+                    className={`px-2 py-2 rounded-xl text-xs font-semibold border transition ${
+                      disabled
+                        ? 'bg-[#ECEBE2] text-court-muted border-[#D4D6CD] cursor-not-allowed line-through'
+                        : selected
+                        ? 'bg-court text-white border-court'
+                        : 'bg-white text-charcoal border-[#D4D6CD] hover:border-court cursor-pointer'
+                    }`}
+                  >
+                    {String(slot.start_hour).padStart(2, '0')}:00
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Tên khách hàng</label>
+              <input
+                type="text"
+                value={walkInName}
+                onChange={(e) => setWalkInName(e.target.value)}
+                placeholder="Nguyễn Văn Walk-in"
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Số điện thoại</label>
+              <input
+                type="text"
+                value={walkInPhone}
+                onChange={(e) => setWalkInPhone(e.target.value)}
+                placeholder="0901234567"
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-court-muted mb-1">Email (tùy chọn)</label>
+              <input
+                type="email"
+                value={walkInEmail}
+                onChange={(e) => setWalkInEmail(e.target.value)}
+                placeholder="khach@example.com"
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2">
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-charcoal cursor-pointer">
+              <input
+                type="checkbox"
+                checked={collectCashNow}
+                onChange={(e) => setCollectCashNow(e.target.checked)}
+                className="w-4 h-4 rounded accent-court"
+              />
+              <span>Thu tiền mặt (Demo) ngay sau khi tạo đơn Walk-in</span>
+            </label>
+            <Button
+              variant="primary"
+              disabled={walkInBusy || !walkInCourtId || walkInHours.length === 0 || !walkInName.trim() || !walkInPhone.trim()}
+              onClick={async () => {
+                setWalkInBusy(true);
+                try {
+                  const created = await apiRequest<BookingOrder>('/api/bookings/staff/walk-in', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                      court_id: walkInCourtId,
+                      play_date: walkInDate,
+                      hours: walkInHours,
+                      customer_name: walkInName.trim(),
+                      customer_phone: walkInPhone.trim(),
+                      customer_email: walkInEmail.trim() || undefined,
+                    }),
+                  });
+                  if (collectCashNow) {
+                    await apiRequest('/api/payments/staff/cash-collect', {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        booking_code: created.booking_code,
+                        amount: created.total_amount,
+                        idempotency_key: `WALKIN-CASH-${created.booking_code}`,
+                        note: 'Thu tiền mặt ngay khi tạo đơn Walk-in',
+                      }),
+                    });
+                  }
+                  setOpFeedback({
+                    ok: true,
+                    message: collectCashNow
+                      ? `Đã tạo đơn Walk-in ${created.booking_code} và thu tiền mặt (Demo) ${formatVND(created.total_amount)}.`
+                      : `Đã tạo đơn Walk-in ${created.booking_code} (${formatVND(created.total_amount)}).`,
+                  });
+                  setWalkInHours([]);
+                  await Promise.all([loadOperations(), loadAvailability(walkInDate), loadLogs()]);
+                  setActiveTab('operations');
+                } catch (err) {
+                  setOpFeedback({
+                    ok: false,
+                    message: err instanceof Error ? err.message : 'Tạo đơn Walk-in thất bại',
+                  });
+                } finally {
+                  setWalkInBusy(false);
+                }
+              }}
+            >
+              {walkInBusy ? 'Đang tạo đơn...' : 'Tạo đơn Walk-in'}
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'maintenance' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-bold text-charcoal">Lịch bảo trì sân</h2>
+              <p className="text-xs text-court-muted">Các khung giờ bảo trì sẽ tự động khóa khỏi lịch đặt sân.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={maintenanceDate}
+                onChange={(e) => {
+                  setMaintenanceDate(e.target.value);
+                  loadMaintenance(e.target.value);
+                }}
+                className="rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+              <Button variant="secondary" size="sm" onClick={() => loadMaintenance(maintenanceDate)}>
+                <RefreshCw className="w-4 h-4" />
+                <span>Làm mới</span>
+              </Button>
+            </div>
+          </div>
+
+          {maintenanceList.length === 0 ? (
+            <EmptyState title="Không có lịch bảo trì" description="Ngày đã chọn hiện chưa có khung giờ bảo trì nào." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+                  <tr>
+                    <th className="px-4 py-3">Sân</th>
+                    <th className="px-4 py-3">Ngày</th>
+                    <th className="px-4 py-3">Khung giờ</th>
+                    <th className="px-4 py-3">Lý do</th>
+                    <th className="px-4 py-3">Trạng thái</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#ECEBE2]">
+                  {maintenanceList.map((m) => (
+                    <tr key={m.id}>
+                      <td className="px-4 py-3 font-medium text-charcoal">{availability.find((c) => c.court.id === m.court_id)?.court.name || m.court_id}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{formatDateVN(m.play_date)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{String(m.start_hour).padStart(2, '0')}:00 - {String(m.end_hour).padStart(2, '0')}:00</td>
+                      <td className="px-4 py-3 text-xs">{m.reason}</td>
+                      <td className="px-4 py-3"><StatusBadge status={m.status} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 };

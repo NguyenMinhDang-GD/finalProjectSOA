@@ -32,6 +32,7 @@ from app.metrics import (
     EVENTS_RETRY_TOTAL,
     REDIS_LOCK_FAILURES_TOTAL,
     REDIS_LOCK_MISMATCH_TOTAL,
+    WALK_IN_BOOKINGS_TOTAL,
 )
 from app.security import hash_guest_token
 from app.models import (
@@ -41,6 +42,8 @@ from app.models import (
     Branch,
     Court,
     Location,
+    MaintenanceBlock,
+    OperationalAuditLog,
     PricingRule,
 )
 from app.schemas import (
@@ -322,6 +325,19 @@ async def get_availability(
         (s.court_id, s.start_hour): s.slot_status for s in slots_rows
     }
 
+    maint_rows = (
+        await db.scalars(
+            select(MaintenanceBlock).where(
+                MaintenanceBlock.play_date == play_date,
+                MaintenanceBlock.status == "SCHEDULED",
+            )
+        )
+    ).all()
+    maint_set: set[tuple[uuid.UUID, int]] = set()
+    for mb in maint_rows:
+        for h in range(mb.start_hour, mb.end_hour):
+            maint_set.add((mb.court_id, h))
+
     now_vn = datetime.now(VN_TZ)
     court_items: list[CourtAvailabilityItem] = []
     for court in courts:
@@ -329,7 +345,7 @@ async def get_availability(
         for h in range(5, 22):
             price, is_peak = _find_slot_price(rules, court.court_type, is_weekend, h)
             slot_start_vn = datetime.combine(play_date, dt_time(h, 0), tzinfo=VN_TZ)
-            if court.status != "ACTIVE":
+            if court.status != "ACTIVE" or (court.id, h) in maint_set:
                 slot_status = "MAINTENANCE"
             elif (court.id, h) in slot_map:
                 slot_status = slot_map[(court.id, h)]
@@ -357,13 +373,29 @@ async def create_booking(
     redis_client: Redis,
     payload: CreateBookingRequest,
     user_id: uuid.UUID | None,
+    *,
+    booking_source: str = "ONLINE",
+    operator_email: str | None = None,
+    operator_role: str | None = None,
 ) -> BookingResponse:
     now_vn = datetime.now(VN_TZ)
     if payload.play_date < now_vn.date():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Không thể đặt sân cho ngày trong quá khứ")
 
     earliest_slot_vn = datetime.combine(payload.play_date, dt_time(payload.hours[0], 0), tzinfo=VN_TZ)
-    if earliest_slot_vn <= now_vn:
+    end_h_check = payload.hours[0] + 1
+    earliest_end_vn = datetime.combine(
+        payload.play_date,
+        dt_time(end_h_check if end_h_check < 24 else 23, 0 if end_h_check < 24 else 59),
+        tzinfo=VN_TZ,
+    )
+    if booking_source == "WALK_IN":
+        if earliest_end_vn <= now_vn:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Khung giờ {payload.hours[0]:02d}:00 - {payload.hours[0] + 1:02d}:00 đã kết thúc, không thể đặt walk-in",
+            )
+    elif earliest_slot_vn <= now_vn:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -376,11 +408,27 @@ async def create_booking(
         select(Court)
         .options(selectinload(Court.location).selectinload(Location.branch))
         .where(Court.id == payload.court_id, Court.is_deleted.is_(False))
+        .with_for_update()
     )
     if not court:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy sân")
     if court.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sân hiện đang bảo trì")
+
+    maint_overlap = await db.scalar(
+        select(MaintenanceBlock).where(
+            MaintenanceBlock.court_id == court.id,
+            MaintenanceBlock.play_date == payload.play_date,
+            MaintenanceBlock.status == "SCHEDULED",
+            MaintenanceBlock.start_hour < payload.hours[-1] + 1,
+            MaintenanceBlock.end_hour > payload.hours[0],
+        )
+    )
+    if maint_overlap:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Sân đang có lịch bảo trì từ {maint_overlap.start_hour:02d}:00 đến {maint_overlap.end_hour:02d}:00",
+        )
 
     court_info = serialize_court(court)
     is_weekend = payload.play_date.weekday() >= 5
@@ -453,6 +501,8 @@ async def create_booking(
             end_hour=payload.hours[-1] + 1,
             total_amount=total_amount,
             status="PENDING_PAYMENT",
+            booking_source=booking_source,
+            booking_revision=1,
             guest_token_hash=guest_token_hash,
             guest_token_expires_at=guest_token_expires_at,
             lock_token=lock_token,
@@ -460,6 +510,26 @@ async def create_booking(
             slots=slot_models,
         )
         db.add(order)
+        if booking_source == "WALK_IN" and operator_email:
+            db.add(
+                OperationalAuditLog(
+                    entity_type="BOOKING",
+                    entity_id=booking_code,
+                    action="WALK_IN_BOOKING_CREATED",
+                    actor=operator_email,
+                    actor_role=operator_role or "STAFF",
+                    previous_state=None,
+                    new_state="PENDING_PAYMENT",
+                    reason="Khách đặt sân trực tiếp tại quầy (Walk-in)",
+                    metadata_json={
+                        "court_name": court.name,
+                        "play_date": payload.play_date.isoformat(),
+                        "start_hour": payload.hours[0],
+                        "end_hour": payload.hours[-1] + 1,
+                        "total_amount": float(total_amount),
+                    },
+                )
+            )
         try:
             await db.commit()
         except IntegrityError as exc:
@@ -473,8 +543,10 @@ async def create_booking(
         order = await _reload_booking(db, order.id)
         BOOKINGS_CREATED_TOTAL.labels(
             court_type=court.court_type,
-            customer_type="registered" if user_id else "guest",
+            customer_type="walk_in" if booking_source == "WALK_IN" else ("registered" if user_id else "guest"),
         ).inc()
+        if booking_source == "WALK_IN":
+            WALK_IN_BOOKINGS_TOTAL.inc()
         resp = BookingResponse.model_validate(order)
         if raw_guest_token is not None:
             resp.guest_access_token = raw_guest_token
@@ -806,6 +878,7 @@ async def confirm_booking_paid(event_data: dict, redis_client: Redis) -> None:
             payload={
                 "booking_id": str(order.id),
                 "booking_code": order.booking_code,
+                "booking_revision": order.booking_revision,
                 "payment_id": event_data.get("payment_id"),
                 "provider": event_data.get("provider"),
                 "provider_tx_id": event_data.get("provider_tx_id"),

@@ -36,6 +36,10 @@ class PaymentTransaction(Base):
     bank_account_no: Mapped[str] = mapped_column(String(40), nullable=False, default="DEMO-ONLY")
     bank_account_name: Mapped[str] = mapped_column(String(120), nullable=False, default="THANH TOÁN GIẢ LẬP")
     provider: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_GATEWAY")
+    payment_method: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_ONLINE")
+    booking_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    collected_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     provider_tx_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="PENDING", index=True
@@ -66,6 +70,7 @@ class PaymentAttempt(Base):
     booking_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     provider: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_GATEWAY")
+    payment_method: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_ONLINE")
     provider_tx_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     outcome: Mapped[str] = mapped_column(
         String(30), nullable=False
@@ -232,6 +237,10 @@ class PaymentCompensation(Base):
     payment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     booking_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_GATEWAY")
+    payment_method: Mapped[str] = mapped_column(String(30), nullable=False, default="SIMULATED_ONLINE")
+    booking_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    collected_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     provider_tx_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     reason: Mapped[str] = mapped_column(Text, nullable=False)

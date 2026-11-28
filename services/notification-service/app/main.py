@@ -18,10 +18,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "postgresql":
             await conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_sent_booking "
-                    "ON notification_logs (booking_code) WHERE status = 'SENT'"
-                )
+                text("DROP INDEX IF EXISTS uq_notification_sent_booking")
             )
 
     await rmq_client.connect()

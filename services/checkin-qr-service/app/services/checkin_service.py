@@ -36,14 +36,14 @@ logger = logging.getLogger(__name__)
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
-def sign_qr_payload(ticket_id: uuid.UUID, booking_code: str) -> tuple[str, str]:
-    msg = f"{ticket_id}:{booking_code}"
+def sign_qr_payload(ticket_id: uuid.UUID, booking_code: str, revision: int = 1) -> tuple[str, str]:
+    msg = f"{ticket_id}:{booking_code}" if revision <= 1 else f"{ticket_id}:{booking_code}:r{revision}"
     sig = hmac.new(
         settings.qr_hmac_secret.encode("utf-8"),
         msg.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()[:24]
-    payload = f"PKB1.{ticket_id}.{booking_code}.{sig}"
+    payload = f"PKB1.{ticket_id}.{booking_code}.{sig}" if revision <= 1 else f"PKB1.{ticket_id}.{booking_code}.r{revision}.{sig}"
     return payload, sig
 
 
@@ -105,7 +105,8 @@ async def issue_ticket_from_booking_confirmed(event_data: dict) -> None:
             return
 
         ticket_id = uuid.uuid4()
-        qr_payload, qr_sig = sign_qr_payload(ticket_id, booking_code)
+        incoming_rev = int(event_data.get("booking_revision") or 1)
+        qr_payload, qr_sig = sign_qr_payload(ticket_id, booking_code, incoming_rev)
 
         play_date_raw = event_data["play_date"]
         play_date = play_date_raw if isinstance(play_date_raw, date) else date.fromisoformat(str(play_date_raw))
@@ -127,6 +128,7 @@ async def issue_ticket_from_booking_confirmed(event_data: dict) -> None:
             total_amount=Decimal(str(event_data.get("total_amount", 0))),
             qr_payload=qr_payload,
             qr_signature=qr_sig,
+            booking_revision=incoming_rev,
             status="VALID",
         )
         db.add(ticket)
@@ -197,6 +199,109 @@ async def revoke_ticket_by_booking(event_data: dict) -> None:
         logger.info("Revoked ticket (if VALID) for cancelled booking_code=%s", booking_code)
 
 
+async def reschedule_ticket_from_event(event_data: dict) -> None:
+    if str(event_data.get("status") or "") != "PAID":
+        return
+    booking_code = str(event_data["booking_code"]).strip()
+    new_rev = int(event_data.get("new_revision") or 2)
+    event_id = resolve_event_id(event_data, f"booking.rescheduled:{booking_code}:r{new_rev}")
+    correlation_id = str(event_data.get("correlation_id") or event_id)
+
+    async with AsyncSessionLocal() as db:
+        claimed = await claim_inbox_event(
+            db,
+            consumer_name="checkin-qr-service.booking_rescheduled",
+            event_id=event_id,
+            event_type="booking.rescheduled",
+            correlation_id=correlation_id,
+        )
+        if not claimed:
+            return
+
+        cancelled = await db.scalar(
+            select(CancelledBooking).where(CancelledBooking.booking_code == booking_code)
+        )
+        if cancelled:
+            await db.commit()
+            return
+
+        ticket = await db.scalar(
+            select(CheckinTicket).where(CheckinTicket.booking_code == booking_code).with_for_update()
+        )
+        if ticket and ticket.booking_revision >= new_rev:
+            await db.commit()
+            logger.info("Skipping stale booking.rescheduled r%s for %s (current r%s)", new_rev, booking_code, ticket.booking_revision)
+            return
+
+        play_date_raw = event_data["play_date"]
+        play_date = play_date_raw if isinstance(play_date_raw, date) else date.fromisoformat(str(play_date_raw))
+
+        if ticket:
+            qr_payload, qr_sig = sign_qr_payload(ticket.id, booking_code, new_rev)
+            ticket.court_name = event_data["court_name"]
+            ticket.branch_name = event_data.get("branch_name", ticket.branch_name)
+            ticket.location_name = event_data.get("location_name", ticket.location_name)
+            ticket.location_address = event_data.get("location_address", ticket.location_address)
+            ticket.play_date = play_date
+            ticket.start_hour = int(event_data["start_hour"])
+            ticket.end_hour = int(event_data["end_hour"])
+            ticket.qr_payload = qr_payload
+            ticket.qr_signature = qr_sig
+            ticket.booking_revision = new_rev
+            if ticket.status != "CHECKED_IN":
+                ticket.status = "VALID"
+        else:
+            ticket_id = uuid.uuid4()
+            qr_payload, qr_sig = sign_qr_payload(ticket_id, booking_code, new_rev)
+            ticket = CheckinTicket(
+                id=ticket_id,
+                booking_id=uuid.UUID(str(event_data["booking_id"])),
+                booking_code=booking_code,
+                customer_name=event_data["customer_name"],
+                customer_email=event_data["customer_email"],
+                customer_phone=event_data.get("customer_phone", ""),
+                court_name=event_data["court_name"],
+                branch_name=event_data.get("branch_name", ""),
+                location_name=event_data.get("location_name", ""),
+                location_address=event_data.get("location_address", ""),
+                play_date=play_date,
+                start_hour=int(event_data["start_hour"]),
+                end_hour=int(event_data["end_hour"]),
+                total_amount=Decimal(str(event_data.get("total_amount", 0))),
+                qr_payload=qr_payload,
+                qr_signature=qr_sig,
+                booking_revision=new_rev,
+                status="VALID",
+            )
+            db.add(ticket)
+
+        enqueue_outbox_event(
+            db,
+            event_type="ticket.issued",
+            aggregate_id=ticket.booking_code,
+            correlation_id=correlation_id,
+            causation_id=event_id,
+            payload={
+                "ticket_id": str(ticket.id),
+                "booking_id": str(ticket.booking_id),
+                "booking_code": ticket.booking_code,
+                "customer_name": ticket.customer_name,
+                "customer_email": ticket.customer_email,
+                "customer_phone": ticket.customer_phone,
+                "court_name": ticket.court_name,
+                "branch_name": ticket.branch_name,
+                "location_name": ticket.location_name,
+                "location_address": ticket.location_address,
+                "play_date": ticket.play_date.isoformat(),
+                "start_hour": ticket.start_hour,
+                "end_hour": ticket.end_hour,
+                "total_amount": float(ticket.total_amount),
+                "qr_payload": ticket.qr_payload,
+            },
+        )
+        await db.commit()
+
+
 async def start_consumers() -> None:
     rmq_client.set_consumer_setup(_setup_checkin_consumers)
     await _setup_checkin_consumers()
@@ -212,6 +317,9 @@ async def _setup_checkin_consumers() -> None:
     )
     await queue.bind(rmq_client.exchange, routing_key="booking.confirmed")
     await queue.bind(rmq_client.exchange, routing_key="booking.cancelled")
+    await queue.bind(rmq_client.exchange, routing_key="booking.rescheduled")
+    await queue.bind(rmq_client.exchange, routing_key="booking.no_show")
+    await queue.bind(rmq_client.exchange, routing_key="booking.completed")
 
     async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
         try:
@@ -235,8 +343,10 @@ async def _setup_checkin_consumers() -> None:
             try:
                 if event_name == "booking.confirmed":
                     await issue_ticket_from_booking_confirmed(data)
-                elif event_name == "booking.cancelled":
+                elif event_name in ("booking.cancelled", "booking.no_show", "booking.completed"):
                     await revoke_ticket_by_booking(data)
+                elif event_name == "booking.rescheduled":
+                    await reschedule_ticket_from_event(data)
                 await message.ack()
                 return
             except Exception as exc:
@@ -265,22 +375,28 @@ async def scan_and_checkin(
 ) -> ScanQRResponse:
     raw = qr_data.strip()
 
+    qr_rev: int | None = None
     if raw.startswith("PKB1."):
         parts = raw.split(".")
-        if len(parts) != 4:
+        if len(parts) == 4:
+            _, ticket_id_str, booking_code, provided_sig = parts
+            qr_rev = 1
+        elif len(parts) == 5 and parts[3].startswith("r") and parts[3][1:].isdigit():
+            _, ticket_id_str, booking_code, rev_part, provided_sig = parts
+            qr_rev = int(rev_part[1:])
+        else:
             QR_SCANS_TOTAL.labels(result="invalid_signature").inc()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Định dạng mã QR không hợp lệ",
             )
-        _, ticket_id_str, booking_code, provided_sig = parts
         try:
             ticket_uuid = uuid.UUID(ticket_id_str)
         except ValueError as exc:
             QR_SCANS_TOTAL.labels(result="invalid_signature").inc()
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã QR không hợp lệ") from exc
 
-        _, expected_sig = sign_qr_payload(ticket_uuid, booking_code)
+        _, expected_sig = sign_qr_payload(ticket_uuid, booking_code, qr_rev)
         if not hmac.compare_digest(expected_sig, provided_sig):
             QR_SCANS_TOTAL.labels(result="invalid_signature").inc()
             raise HTTPException(
@@ -288,6 +404,12 @@ async def scan_and_checkin(
                 detail="Chữ ký HMAC mã QR không hợp lệ (nghi ngờ vé giả mạo)",
             )
         ticket = await db.scalar(select(CheckinTicket).where(CheckinTicket.id == ticket_uuid))
+        if ticket and qr_rev != ticket.booking_revision:
+            QR_SCANS_TOTAL.labels(result="revoked").inc()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Vé QR thuộc phiên bản lịch cũ (v{qr_rev}), không còn hiệu lực. Vui lòng dùng vé mới nhất (v{ticket.booking_revision}).",
+            )
     else:
         # Manual booking_code entry fallback by Staff
         ticket = await db.scalar(select(CheckinTicket).where(CheckinTicket.booking_code == raw))
@@ -334,7 +456,11 @@ async def scan_and_checkin(
             claim_resp = await client.post(
                 f"{settings.booking_service_url}/api/bookings/internal/{ticket.booking_code}/claim-checkin",
                 headers={"X-Internal-Key": settings.internal_api_key},
-                json={"ticket_id": str(ticket.id), "staff_email": staff_email},
+                json={
+                    "ticket_id": str(ticket.id),
+                    "staff_email": staff_email,
+                    "expected_revision": ticket.booking_revision,
+                },
             )
         if claim_resp.status_code == 409:
             detail_msg = str(claim_resp.json().get("detail") or "")

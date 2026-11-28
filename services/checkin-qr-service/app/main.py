@@ -22,6 +22,7 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("ALTER TABLE checkin_tickets ADD COLUMN IF NOT EXISTS branch_name VARCHAR(180) NOT NULL DEFAULT ''"))
             await conn.execute(text("ALTER TABLE checkin_tickets ADD COLUMN IF NOT EXISTS location_name VARCHAR(180) NOT NULL DEFAULT ''"))
             await conn.execute(text("ALTER TABLE checkin_tickets ADD COLUMN IF NOT EXISTS location_address VARCHAR(300) NOT NULL DEFAULT ''"))
+            await conn.execute(text("ALTER TABLE checkin_tickets ADD COLUMN IF NOT EXISTS booking_revision INTEGER NOT NULL DEFAULT 1"))
 
     await rmq_client.connect()
     await start_consumers()

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     internal_api_key: str = "soa-pickleball-internal-service-key-2026"
     cors_origins: str = "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
     lock_ttl_seconds: int = 900  # 15 minutes
+    reschedule_cutoff_hours: int = 2
+    no_show_grace_minutes: int = 30
 
     @property
     def cors_origins_list(self) -> list[str]:

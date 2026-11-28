@@ -7,7 +7,7 @@ import { AlertBanner, ConfirmDialog, LoadingSkeleton } from '../components/ui/Fe
 import { QrTicketCard } from '../components/ui/QrTicketCard';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
-import { BookingOrder, CancellationQuote, CheckinTicket, PaymentTransaction, RefundTransaction } from '../types';
+import { AvailabilityResponse, BookingOrder, CancellationQuote, CheckinTicket, PaymentTransaction, RefundTransaction, RescheduleQuote } from '../types';
 
 export const CheckoutPage: React.FC = () => {
   const { user } = useAuth();
@@ -17,6 +17,13 @@ export const CheckoutPage: React.FC = () => {
   const [ticket, setTicket] = useState<CheckinTicket | null>(null);
   const [refunds, setRefunds] = useState<RefundTransaction[]>([]);
   const [cancelQuote, setCancelQuote] = useState<CancellationQuote | null>(null);
+  const [rescheduleOpen, setRescheduleOpen] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleAvail, setRescheduleAvail] = useState<AvailabilityResponse | null>(null);
+  const [rescheduleCourtId, setRescheduleCourtId] = useState('');
+  const [rescheduleHour, setRescheduleHour] = useState<number | null>(null);
+  const [rescheduleQuote, setRescheduleQuote] = useState<RescheduleQuote | null>(null);
+  const [rescheduling, setRescheduling] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [error, setError] = useState('');
   const [pollWarning, setPollWarning] = useState('');
@@ -239,6 +246,67 @@ export const CheckoutPage: React.FC = () => {
     }
   };
 
+  const loadRescheduleAvailability = async (targetDate: string) => {
+    if (!targetDate) return;
+    setRescheduleDate(targetDate);
+    setRescheduleQuote(null);
+    setRescheduleHour(null);
+    try {
+      const avail = await apiRequest<AvailabilityResponse>(`/api/courts/availability?date=${targetDate}`);
+      setRescheduleAvail(avail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không tải được lịch trống');
+    }
+  };
+
+  const handleSelectRescheduleSlot = async (courtId: string, startHour: number) => {
+    if (!bookingCode || !rescheduleDate) return;
+    setRescheduleCourtId(courtId);
+    setRescheduleHour(startHour);
+    try {
+      const q = await apiRequest<RescheduleQuote>(
+        `/api/bookings/${bookingCode}/reschedule-quote`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ court_id: courtId, play_date: rescheduleDate, hours: [startHour] }),
+        },
+        bookingCode
+      );
+      setRescheduleQuote(q);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không kiểm tra được đổi lịch');
+    }
+  };
+
+  const handleConfirmReschedule = async () => {
+    if (!bookingCode || !rescheduleCourtId || !rescheduleDate || rescheduleHour === null) return;
+    setRescheduling(true);
+    setError('');
+    try {
+      await apiRequest(
+        `/api/bookings/${bookingCode}/reschedule`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            court_id: rescheduleCourtId,
+            play_date: rescheduleDate,
+            hours: [rescheduleHour],
+            expected_revision: booking?.booking_revision ?? 1,
+            idempotency_key: `ui-${bookingCode}-${booking?.booking_revision ?? 1}-${rescheduleDate}-${rescheduleHour}`,
+          }),
+        },
+        bookingCode
+      );
+      setRescheduleOpen(false);
+      setRescheduleQuote(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Đổi lịch thất bại');
+    } finally {
+      setRescheduling(false);
+    }
+  };
+
   if (error && !booking) {
     return (
       <div className="max-w-xl mx-auto px-4 py-12 space-y-4">
@@ -359,21 +427,104 @@ export const CheckoutPage: React.FC = () => {
             <div className="flex items-center gap-2">
               <Mail className="w-4 h-4 text-court shrink-0" aria-hidden="true" />
               <span>
-                Nếu chưa thấy email trong hộp thư chính, vui lòng kiểm tra hộp thư thử nghiệm hoặc tra cứu lại bằng mã{' '}
+                Phiên bản lịch <strong className="font-mono text-charcoal">v{booking.booking_revision || 1}</strong> • Mã đơn{' '}
                 <strong className="font-mono text-charcoal">{booking.booking_code}</strong>.
               </span>
             </div>
-            {cancelQuote?.eligible && (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => setConfirmCancelOpen(true)}
-              >
-                Hủy đơn ({cancelQuote.refund_percent}% hoàn tiền)
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2">
+              {booking.admission_status !== 'ADMITTED' && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const nextOpen = !rescheduleOpen;
+                    setRescheduleOpen(nextOpen);
+                    if (nextOpen && !rescheduleDate) {
+                      loadRescheduleAvailability(booking.play_date);
+                    }
+                  }}
+                >
+                  Đổi lịch chơi
+                </Button>
+              )}
+              {cancelQuote?.eligible && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setConfirmCancelOpen(true)}
+                >
+                  Hủy đơn ({cancelQuote.refund_percent}% hoàn tiền)
+                </Button>
+              )}
+            </div>
           </div>
+
+          {rescheduleOpen && (
+            <div className="bg-white rounded-2xl border border-[#CFCFC4] p-5 space-y-4 no-print">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="font-display font-bold text-charcoal">Chọn khung giờ mới (Đổi lịch cùng mức giá)</h2>
+                <input
+                  type="date"
+                  value={rescheduleDate}
+                  onChange={(e) => loadRescheduleAvailability(e.target.value)}
+                  className="rounded-lg border border-[#CFCFC4] px-3 py-1.5 text-sm font-mono"
+                />
+              </div>
+              {rescheduleAvail && (
+                <div className="space-y-3 max-h-64 overflow-y-auto">
+                  {rescheduleAvail.courts.map((c) => (
+                    <div key={c.court.id} className="space-y-1.5">
+                      <div className="text-xs font-bold text-court">{c.court.name}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {c.slots
+                          .filter((s) => s.status === 'AVAILABLE')
+                          .map((s) => {
+                            const selected = rescheduleCourtId === c.court.id && rescheduleHour === s.start_hour;
+                            return (
+                              <button
+                                key={s.start_hour}
+                                type="button"
+                                onClick={() => handleSelectRescheduleSlot(c.court.id, s.start_hour)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-mono border ${
+                                  selected
+                                    ? 'bg-court text-white border-court font-bold'
+                                    : 'bg-warm-white border-[#CFCFC4] text-charcoal hover:border-court'
+                                }`}
+                              >
+                                {s.start_hour}:00 ({formatVND(s.price)})
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {rescheduleQuote && (
+                <div className="p-3 rounded-xl bg-warm-white border border-[#DCDCD2] text-xs space-y-2">
+                  <div>
+                    Giá hiện tại: <strong>{formatVND(rescheduleQuote.current_amount)}</strong> → Giá mới:{' '}
+                    <strong>{formatVND(rescheduleQuote.new_amount)}</strong>
+                  </div>
+                  {!rescheduleQuote.eligible ? (
+                    <div className="text-[#B93829] font-semibold">{rescheduleQuote.reason}</div>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      loading={rescheduling}
+                      onClick={handleConfirmReschedule}
+                    >
+                      Xác nhận đổi lịch
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {payment && payment.received_amount > payment.expected_amount && (
             <AlertBanner tone="warning" title="Ghi nhận thanh toán dư — Đang chờ đối soát hoàn phần dư">

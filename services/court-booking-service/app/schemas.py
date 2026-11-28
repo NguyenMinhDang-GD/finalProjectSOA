@@ -176,6 +176,15 @@ class BookingResponse(BaseModel):
     end_hour: int
     total_amount: float
     status: str
+    booking_source: str = "ONLINE"
+    booking_revision: int = 1
+    admission_status: str = "NONE"
+    checked_in_at: datetime | None = None
+    checked_in_by: str | None = None
+    no_show_at: datetime | None = None
+    no_show_by: str | None = None
+    completed_at: datetime | None = None
+    completed_by: str | None = None
     cancel_reason: str | None
     expires_at: datetime
     paid_at: datetime | None
@@ -202,6 +211,7 @@ class BookingAuthorizeResponse(BaseModel):
 class ClaimCheckinRequest(BaseModel):
     ticket_id: str = Field(min_length=4, max_length=64)
     staff_email: str = Field(min_length=2, max_length=150)
+    expected_revision: int | None = None
 
 
 class ClaimCheckinResponse(BaseModel):
@@ -239,3 +249,129 @@ class AdminStatsResponse(BaseModel):
     cancelled_or_expired: int
     total_revenue: float
     active_courts: int
+
+
+class RescheduleQuoteRequest(BaseModel):
+    court_id: uuid.UUID
+    play_date: date
+    hours: list[int] = Field(min_length=1, max_length=6)
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v: list[int]) -> list[int]:
+        return CreateBookingRequest.validate_contiguous_hours(v)
+
+
+class RescheduleQuoteResponse(BaseModel):
+    booking_code: str
+    eligible: bool
+    reason: str | None = None
+    current_amount: float
+    new_amount: float
+    same_price: bool
+    hours_until_current_start: float
+
+
+class RescheduleBookingRequest(BaseModel):
+    court_id: uuid.UUID
+    play_date: date
+    hours: list[int] = Field(min_length=1, max_length=6)
+    idempotency_key: str | None = Field(default=None, max_length=80)
+    expected_revision: int | None = None
+    reason: str | None = Field(default=None, max_length=300)
+    staff_override: bool = False
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v: list[int]) -> list[int]:
+        return CreateBookingRequest.validate_contiguous_hours(v)
+
+
+class RescheduleHistoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    booking_code: str
+    previous_revision: int
+    new_revision: int
+    previous_court_name: str
+    previous_play_date: date
+    previous_start_hour: int
+    previous_end_hour: int
+    previous_amount: float
+    new_court_name: str
+    new_play_date: date
+    new_start_hour: int
+    new_end_hour: int
+    new_amount: float
+    actor: str
+    actor_role: str
+    reason: str | None
+    created_at: datetime
+
+
+class WalkInBookingRequest(BaseModel):
+    court_id: uuid.UUID
+    play_date: date
+    hours: list[int] = Field(min_length=1, max_length=6)
+    customer_name: str = Field(min_length=2, max_length=150)
+    customer_phone: str = Field(min_length=8, max_length=20)
+    customer_email: EmailStr | None = None
+
+    @field_validator("hours")
+    @classmethod
+    def validate_hours(cls, v: list[int]) -> list[int]:
+        return CreateBookingRequest.validate_contiguous_hours(v)
+
+
+class CreateMaintenanceRequest(BaseModel):
+    court_id: uuid.UUID
+    play_date: date
+    start_hour: int = Field(ge=5, le=21)
+    end_hour: int = Field(ge=6, le=22)
+    reason: str = Field(min_length=3, max_length=300)
+    idempotency_key: str | None = Field(default=None, max_length=80)
+
+
+class MaintenanceBlockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    court_id: uuid.UUID
+    court_name_snapshot: str
+    play_date: date
+    start_hour: int
+    end_hour: int
+    reason: str
+    status: str
+    created_by: str
+    cancelled_by: str | None = None
+    cancelled_at: datetime | None = None
+    created_at: datetime
+
+
+class NoShowRequest(BaseModel):
+    reason: str = Field(default="Khách không đến sau thời gian chờ", max_length=300)
+    grace_minutes_override: int | None = Field(default=None, ge=0, le=240)
+
+
+class CompleteBookingRequest(BaseModel):
+    reason: str = Field(default="Hoàn tất ca chơi", max_length=300)
+    early_completion: bool = False
+
+
+class OperationalAuditLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    entity_type: str
+    entity_id: str
+    action: str
+    actor: str
+    actor_role: str
+    previous_state: str | None
+    new_state: str | None
+    reason: str | None
+    correlation_id: str | None
+    metadata_json: dict
+    created_at: datetime

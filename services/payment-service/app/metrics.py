@@ -39,6 +39,12 @@ REFUNDS_TOTAL = Counter(
     ["status", "policy_tier"],
 )
 
+CASH_COLLECTIONS_TOTAL = Counter(
+    "pickleball_cash_collections_total",
+    "Total simulated counter cash collections",
+    ["outcome"],
+)
+
 OUTBOX_PENDING_GAUGE = Gauge(
     "pickleball_outbox_pending_events",
     "Current number of pending outbox events",

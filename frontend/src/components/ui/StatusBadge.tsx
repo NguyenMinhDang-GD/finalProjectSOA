@@ -59,6 +59,26 @@ const STATUS_MAP: Record<
     classes: 'bg-red-50 text-red-900 border-red-200',
     icon: <AlertTriangle className="w-3 h-3" aria-hidden="true" />,
   },
+  PROCESSING: {
+    label: 'Đang xử lý',
+    classes: 'bg-amber-50 text-amber-900 border-amber-300',
+    icon: <Clock className="w-3 h-3" aria-hidden="true" />,
+  },
+  NO_SHOW: {
+    label: 'Vắng mặt (No-Show)',
+    classes: 'bg-red-50 text-red-900 border-red-200',
+    icon: <Ban className="w-3 h-3" aria-hidden="true" />,
+  },
+  COMPLETED: {
+    label: 'Hoàn tất ca chơi',
+    classes: 'bg-[#E6F4EC] text-[#14532D] border-[#A7D7BA]',
+    icon: <CheckCircle2 className="w-3 h-3" aria-hidden="true" />,
+  },
+  SCHEDULED: {
+    label: 'Đã lên lịch',
+    classes: 'bg-amber-50 text-amber-900 border-amber-300',
+    icon: <Wrench className="w-3 h-3" aria-hidden="true" />,
+  },
   COMPENSATION_REQUIRED: {
     label: 'Cần đối soát',
     classes: 'bg-amber-50 text-amber-950 border-amber-400',

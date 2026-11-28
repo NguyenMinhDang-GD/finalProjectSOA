@@ -97,7 +97,16 @@ export interface BookingOrder {
   start_hour: number;
   end_hour: number;
   total_amount: number;
-  status: 'PENDING_PAYMENT' | 'PAID' | 'CANCELLED' | 'EXPIRED';
+  status: 'PENDING_PAYMENT' | 'PAID' | 'CANCELLED' | 'EXPIRED' | 'NO_SHOW' | 'COMPLETED';
+  booking_source?: 'ONLINE' | 'WALK_IN';
+  booking_revision?: number;
+  admission_status?: 'NONE' | 'ADMITTED';
+  checked_in_at?: string | null;
+  checked_in_by?: string | null;
+  no_show_at?: string | null;
+  no_show_by?: string | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
   cancel_reason: string | null;
   expires_at: string;
   paid_at: string | null;
@@ -123,6 +132,10 @@ export interface PaymentTransaction {
   bank_account_no: string;
   bank_account_name: string;
   provider: string;
+  payment_method?: string;
+  booking_revision?: number;
+  collected_by?: string | null;
+  collected_at?: string | null;
   provider_tx_id: string | null;
   status: 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
   attempt_count: number;
@@ -141,6 +154,10 @@ export interface PaymentAttempt {
   booking_code: string;
   attempt_number: number;
   provider: string;
+  payment_method?: string;
+  booking_revision?: number;
+  collected_by?: string | null;
+  collected_at?: string | null;
   provider_tx_id: string | null;
   outcome: string;
   expected_amount: number;
@@ -224,6 +241,46 @@ export interface CancellationQuote {
   total_amount: number;
   estimated_refund_amount: number;
   message: string;
+}
+
+export interface RescheduleQuote {
+  booking_code: string;
+  eligible: boolean;
+  reason: string | null;
+  current_amount: number;
+  new_amount: number;
+  same_price: boolean;
+  hours_until_current_start: number;
+}
+
+export interface MaintenanceBlock {
+  id: string;
+  court_id: string;
+  court_name_snapshot: string;
+  play_date: string;
+  start_hour: number;
+  end_hour: number;
+  reason: string;
+  status: 'SCHEDULED' | 'CANCELLED' | 'COMPLETED';
+  created_by: string;
+  cancelled_by: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+}
+
+export interface OperationalAuditLog {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  action: string;
+  actor: string;
+  actor_role: string;
+  previous_state: string | null;
+  new_state: string | null;
+  reason: string | null;
+  correlation_id: string | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface CheckinTicket {

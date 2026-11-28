@@ -22,6 +22,7 @@ from app.metrics import (
     EVENTS_DLQ_TOTAL,
     EVENTS_DUPLICATE_TOTAL,
     EVENTS_RETRY_TOTAL,
+    CASH_COLLECTIONS_TOTAL,
     PAYMENTS_CONFIRMED_TOTAL,
     PAYMENTS_FAILED_TOTAL,
     PAYMENT_COMPENSATION_REQUIRED_TOTAL,
@@ -175,6 +176,8 @@ async def create_or_get_payment(db: AsyncSession, booking_code: str) -> PaymentR
         bank_account_no=session.bank_account_no,
         bank_account_name=session.bank_account_name,
         provider=session.provider,
+        payment_method="SIMULATED_ONLINE",
+        booking_revision=int(booking.get("booking_revision") or 1),
         status="PENDING",
         booking_snapshot={
             "booking_id": booking["id"],
@@ -298,6 +301,7 @@ async def _record_attempt(
     *,
     tx: PaymentTransaction,
     provider: str,
+    payment_method: str = "SIMULATED_ONLINE",
     provider_tx_id: str | None,
     outcome: str,
     received_amount: int,
@@ -312,6 +316,7 @@ async def _record_attempt(
         booking_code=tx.booking_code,
         attempt_number=tx.attempt_count,
         provider=provider,
+        payment_method=payment_method,
         provider_tx_id=provider_tx_id,
         outcome=outcome,
         expected_amount=tx.expected_amount or int(round(float(tx.amount))),
@@ -444,6 +449,8 @@ async def confirm_payment_idempotent(
     outcome: str = "SUCCEEDED",
     failure_reason: str | None = None,
     initiated_by: str = "webhook",
+    payment_method: str = "SIMULATED_ONLINE",
+    expected_revision: int | None = None,
 ) -> PaymentResponse:
     _require_provider()
     code = booking_code.strip()
@@ -716,14 +723,23 @@ async def confirm_payment_idempotent(
         return PaymentResponse.model_validate(tx)
 
     # 6. Exact or Overpayment -> SUCCEEDED (confirm booking!)
+    if expected_revision is not None and tx.booking_revision != expected_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Phiên bản đơn đặt sân không khớp (hiện tại v{tx.booking_revision} != v{expected_revision})",
+        )
     prev = tx.status
     now_utc = datetime.now(timezone.utc)
     tx.status = "SUCCEEDED"
     tx.provider = provider
+    tx.payment_method = payment_method
     tx.provider_tx_id = provider_tx_id
     tx.received_amount = cumulative_received
     tx.failure_reason = None
     tx.paid_at = now_utc
+    if payment_method == "SIMULATED_CASH":
+        tx.collected_by = initiated_by
+        tx.collected_at = now_utc
 
     is_overpaid = cumulative_received > expected_vnd
     attempt_outcome = "OVERPAID" if is_overpaid else "SUCCEEDED"
@@ -731,6 +747,7 @@ async def confirm_payment_idempotent(
         db,
         tx=tx,
         provider=provider,
+        payment_method=payment_method,
         provider_tx_id=provider_tx_id,
         outcome=attempt_outcome,
         received_amount=received_vnd,
@@ -796,6 +813,147 @@ async def confirm_payment_idempotent(
 
     PAYMENTS_CONFIRMED_TOTAL.labels(provider=provider).inc()
     return PaymentResponse.model_validate(tx)
+
+
+async def collect_simulated_cash(
+    db: AsyncSession,
+    *,
+    booking_code: str,
+    amount: int,
+    idempotency_key: str,
+    staff_email: str,
+    note: str | None = None,
+) -> PaymentResponse:
+    _require_provider()
+    code = booking_code.strip()
+    provider_tx_id = f"CASH-{idempotency_key.strip()}"
+
+    # Check idempotency first before querying booking-service if already recorded
+    existing_attempt = await db.scalar(
+        select(PaymentAttempt).where(
+            PaymentAttempt.booking_code == code,
+            PaymentAttempt.provider_tx_id == provider_tx_id,
+        )
+    )
+    if existing_attempt:
+        tx = await db.scalar(select(PaymentTransaction).where(PaymentTransaction.booking_code == code))
+        if tx:
+            return PaymentResponse.model_validate(tx)
+
+    booking = await fetch_booking_from_service(code)
+    if booking["status"] in ("CANCELLED", "EXPIRED"):
+        # Still record late payment compensation if staff collected cash against cancelled/expired booking
+        return await confirm_payment_idempotent(
+            db=db,
+            booking_code=code,
+            provider_tx_id=provider_tx_id,
+            provider="SIMULATED_COUNTER",
+            payment_method="SIMULATED_CASH",
+            amount_paid=amount,
+            outcome="LATE",
+            initiated_by=staff_email,
+        )
+    if booking["status"] != "PENDING_PAYMENT":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đơn đặt sân đang ở trạng thái {booking['status']}, không thể thu tiền mặt giả lập",
+        )
+
+    expected_amount = int(round(float(booking["total_amount"])))
+    if amount != expected_amount:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Số tiền thu tại quầy ({amount:,}đ) không khớp tổng tiền đơn ({expected_amount:,}đ)",
+        )
+    await create_or_get_payment(db, code)
+    res = await confirm_payment_idempotent(
+        db=db,
+        booking_code=code,
+        provider_tx_id=provider_tx_id,
+        provider="SIMULATED_COUNTER",
+        payment_method="SIMULATED_CASH",
+        amount_paid=amount,
+        outcome="SUCCEEDED",
+        initiated_by=staff_email,
+        expected_revision=int(booking.get("booking_revision") or 1),
+    )
+    CASH_COLLECTIONS_TOTAL.labels(outcome=res.status).inc()
+    return res
+
+
+async def sync_payment_revision(
+    db: AsyncSession,
+    *,
+    booking_code: str,
+    expected_amount: int,
+    booking_revision: int,
+) -> dict:
+    tx = await db.scalar(
+        select(PaymentTransaction)
+        .where(PaymentTransaction.booking_code == booking_code.strip())
+        .with_for_update()
+    )
+    if not tx:
+        return {"updated": False}
+    if tx.booking_revision >= booking_revision:
+        return {
+            "updated": False,
+            "stale": tx.booking_revision > booking_revision,
+            "booking_revision": tx.booking_revision,
+            "expected_amount": tx.expected_amount,
+        }
+    if tx.status == "SUCCEEDED":
+        tx.booking_revision = booking_revision
+        await db.commit()
+        return {"updated": True, "status": tx.status}
+
+    prev_amount = tx.expected_amount
+    tx.expected_amount = expected_amount
+    tx.amount = Decimal(str(expected_amount))
+    tx.booking_revision = booking_revision
+    tx.qr_image_url = build_non_financial_demo_qr(tx.booking_code, expected_amount)
+    if tx.status in ("FAILED", "PROCESSING"):
+        tx.status = "PENDING"
+        tx.failure_reason = None
+    _record_audit(
+        db,
+        entity_type="PAYMENT",
+        entity_id=str(tx.id),
+        booking_code=tx.booking_code,
+        action="PAYMENT_REVISION_SYNCED",
+        actor="court-booking-service",
+        actor_role="SYSTEM",
+        previous_state=f"amt={prev_amount}",
+        new_state=f"amt={expected_amount},rev={booking_revision}",
+        amount_vnd=expected_amount,
+        reason="Cập nhật nghĩa vụ thanh toán theo lịch đặt sân mới",
+    )
+    await db.commit()
+    return {"updated": True, "expected_amount": expected_amount, "booking_revision": booking_revision}
+
+
+async def check_reschedule_eligibility(db: AsyncSession, booking_code: str) -> dict:
+    code = booking_code.strip()
+    tx = await db.scalar(select(PaymentTransaction).where(PaymentTransaction.booking_code == code))
+    if not tx:
+        return {"blocked": False, "reason": None}
+    if tx.reconciliation_status in ("OPEN", "IN_REVIEW", "COMPENSATION_REQUIRED"):
+        return {
+            "blocked": True,
+            "reason": f"Đơn đang có hồ sơ đối soát ({tx.reconciliation_status}), không thể đổi lịch",
+        }
+    active_refund = await db.scalar(
+        select(RefundTransaction).where(
+            RefundTransaction.booking_code == code,
+            RefundTransaction.status.in_(("REQUESTED", "APPROVED", "PROCESSING", "SUCCEEDED")),
+        )
+    )
+    if active_refund:
+        return {
+            "blocked": True,
+            "reason": f"Đơn đã có giao dịch hoàn tiền ({active_refund.status}), không thể đổi lịch",
+        }
+    return {"blocked": False, "reason": None}
 
 
 async def retry_failed_payment(
@@ -1545,6 +1703,32 @@ async def _handle_booking_lifecycle_event(data: dict) -> None:
                             },
                         )
                         REFUNDS_TOTAL.labels(status="REQUESTED", policy_tier=policy_tier).inc()
+        elif event_name == "booking.rescheduled":
+            new_rev = int(data.get("new_revision") or 1)
+            new_amt = int(round(float(data.get("total_amount") or 0)))
+            if tx and tx.booking_revision < new_rev:
+                prev_amt = tx.expected_amount
+                tx.booking_revision = new_rev
+                if tx.status != "SUCCEEDED":
+                    tx.expected_amount = new_amt
+                    tx.amount = Decimal(str(new_amt))
+                    tx.qr_image_url = build_non_financial_demo_qr(tx.booking_code, new_amt)
+                    if tx.status in ("FAILED", "PROCESSING"):
+                        tx.status = "PENDING"
+                        tx.failure_reason = None
+                _record_audit(
+                    db,
+                    entity_type="PAYMENT",
+                    entity_id=str(tx.id),
+                    booking_code=booking_code,
+                    action="PAYMENT_REVISION_SYNCED_EVENT",
+                    actor="rabbitmq",
+                    actor_role="SYSTEM",
+                    previous_state=f"amt={prev_amt}",
+                    new_state=f"amt={tx.expected_amount},rev={new_rev}",
+                    amount_vnd=tx.expected_amount,
+                    reason="Đồng bộ phiên bản lịch từ sự kiện booking.rescheduled",
+                )
         elif event_name == "booking.confirmation_failed":
             reason = str(data.get("reason") or "BOOKING_CONFIRMATION_FAILED")
             if tx:
@@ -1606,6 +1790,7 @@ async def _setup_booking_lifecycle_consumer() -> None:
     )
     await queue.bind(rmq_client.exchange, routing_key="booking.expired")
     await queue.bind(rmq_client.exchange, routing_key="booking.cancelled")
+    await queue.bind(rmq_client.exchange, routing_key="booking.rescheduled")
     await queue.bind(rmq_client.exchange, routing_key="booking.confirmation_failed")
 
     async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:

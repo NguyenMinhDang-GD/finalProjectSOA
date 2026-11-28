@@ -31,6 +31,29 @@ BOOKINGS_PAID_TOTAL = Counter(
     "Total bookings confirmed paid via RabbitMQ",
 )
 
+BOOKINGS_RESCHEDULED_TOTAL = Counter(
+    "pickleball_bookings_rescheduled_total",
+    "Total booking reschedules",
+    ["outcome"],
+)
+
+WALK_IN_BOOKINGS_TOTAL = Counter(
+    "pickleball_walk_in_bookings_total",
+    "Total walk-in bookings created",
+)
+
+MAINTENANCE_BLOCKS_TOTAL = Counter(
+    "pickleball_maintenance_blocks_total",
+    "Total court maintenance block actions",
+    ["action"],
+)
+
+BOOKINGS_LIFECYCLE_TOTAL = Counter(
+    "pickleball_bookings_lifecycle_total",
+    "Total operational lifecycle transitions",
+    ["status"],
+)
+
 OUTBOX_PENDING_GAUGE = Gauge(
     "pickleball_outbox_pending_events",
     "Current number of pending outbox events",

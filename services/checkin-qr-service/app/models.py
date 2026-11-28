@@ -25,6 +25,7 @@ class CheckinTicket(Base):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
     qr_payload: Mapped[str] = mapped_column(Text, nullable=False)
     qr_signature: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    booking_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="VALID", index=True
     )  # VALID | CHECKED_IN | REVOKED

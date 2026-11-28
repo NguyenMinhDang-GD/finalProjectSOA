@@ -97,10 +97,16 @@ class BookingOrder(Base):
     guest_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     guest_token_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lock_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    booking_source: Mapped[str] = mapped_column(String(20), nullable=False, default="ONLINE")  # ONLINE | WALK_IN
+    booking_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     admission_status: Mapped[str] = mapped_column(String(20), nullable=False, default="NONE")
     admission_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     checked_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     checked_in_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    no_show_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    no_show_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -173,6 +179,89 @@ class InboxEvent(Base):
     correlation_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PROCESSED")
     processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class BookingRescheduleHistory(Base):
+    __tablename__ = "booking_reschedule_history"
+    __table_args__ = (
+        Index("ix_reschedule_booking_created", "booking_code", "created_at"),
+        UniqueConstraint("booking_code", "idempotency_key", name="uq_reschedule_booking_idem"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    booking_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    booking_code: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    previous_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_court_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    previous_court_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    previous_play_date: Mapped[date] = mapped_column(Date, nullable=False)
+    previous_start_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_end_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    new_court_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    new_court_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    new_play_date: Mapped[date] = mapped_column(Date, nullable=False)
+    new_start_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_end_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    new_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    actor: Mapped[str] = mapped_column(String(150), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class MaintenanceBlock(Base):
+    __tablename__ = "maintenance_blocks"
+    __table_args__ = (
+        Index("ix_maintenance_court_date_status", "court_id", "play_date", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    court_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courts.id"), nullable=False, index=True)
+    court_name_snapshot: Mapped[str] = mapped_column(String(120), nullable=False)
+    play_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    start_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="SCHEDULED", index=True
+    )  # SCHEDULED | CANCELLED | COMPLETED
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(150), nullable=False)
+    cancelled_by: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class OperationalAuditLog(Base):
+    __tablename__ = "operational_audit_logs"
+    __table_args__ = (
+        Index("ix_op_audit_entity_created", "entity_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entity_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(150), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(30), nullable=False)
+    previous_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    new_state: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 

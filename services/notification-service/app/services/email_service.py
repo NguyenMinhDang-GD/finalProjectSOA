@@ -311,6 +311,9 @@ async def _setup_ticket_consumer() -> None:
     )
     await fin_queue.bind(rmq_client.exchange, routing_key="refund.succeeded")
     await fin_queue.bind(rmq_client.exchange, routing_key="refund.failed")
+    await fin_queue.bind(rmq_client.exchange, routing_key="booking.rescheduled")
+    await fin_queue.bind(rmq_client.exchange, routing_key="booking.no_show")
+    await fin_queue.bind(rmq_client.exchange, routing_key="booking.completed")
 
     async def _on_fin_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
         try:
@@ -339,24 +342,39 @@ async def _setup_ticket_consumer() -> None:
                     await db.rollback()
                     await message.ack()
                     return
-                subject = (
-                    f"[Pickleball SOA] Hoàn tiền thành công - Mã đơn {booking_code}"
-                    if event_name == "refund.succeeded"
-                    else f"[Pickleball SOA] Thông báo hoàn tiền thất bại - Mã đơn {booking_code}"
-                )
+                if event_name == "refund.succeeded":
+                    subject = f"[Pickleball SOA] Hoàn tiền thành công - Mã đơn {booking_code}"
+                elif event_name == "refund.failed":
+                    subject = f"[Pickleball SOA] Thông báo hoàn tiền thất bại - Mã đơn {booking_code}"
+                elif event_name == "booking.rescheduled":
+                    subject = f"[Pickleball SOA] Xác nhận đổi lịch đặt sân - Mã đơn {booking_code}"
+                elif event_name == "booking.no_show":
+                    subject = f"[Pickleball SOA] Thông báo No-Show - Mã đơn {booking_code}"
+                else:
+                    subject = f"[Pickleball SOA] Hoàn tất ca chơi - Mã đơn {booking_code}"
+
                 if recipient:
                     msg = EmailMessage()
                     msg["From"] = settings.smtp_from
                     msg["To"] = recipient
                     msg["Subject"] = subject
-                    amount_str = f"{int(data.get('refunded_amount') or data.get('requested_amount') or 0):,} VNĐ"
-                    msg.set_content(
-                        f"Xin chào {data.get('customer_name') or 'Quý khách'},\n\n"
-                        f"Trạng thái hoàn tiền cho đơn {booking_code}: {event_name}.\n"
-                        f"Mã hoàn tiền: {data.get('refund_code', 'N/A')}\n"
-                        f"Số tiền: {amount_str}\n"
-                        f"Ghi chú: {data.get('reason', 'Hệ thống thanh toán giả lập (không phát sinh tiền thật).')}\n"
-                    )
+                    if event_name.startswith("refund."):
+                        amount_str = f"{int(data.get('refunded_amount') or data.get('requested_amount') or 0):,} VNĐ"
+                        body_txt = (
+                            f"Xin chào {data.get('customer_name') or 'Quý khách'},\n\n"
+                            f"Trạng thái hoàn tiền cho đơn {booking_code}: {event_name}.\n"
+                            f"Mã hoàn tiền: {data.get('refund_code', 'N/A')}\n"
+                            f"Số tiền: {amount_str}\n"
+                            f"Ghi chú: {data.get('reason', 'Hệ thống thanh toán giả lập (không phát sinh tiền thật).')}\n"
+                        )
+                    else:
+                        body_txt = (
+                            f"Xin chào {data.get('customer_name') or 'Quý khách'},\n\n"
+                            f"Cập nhật trạng thái đơn đặt sân {booking_code}: {event_name}.\n"
+                            f"Sân: {data.get('court_name', '')} • Ngày: {data.get('play_date', '')} "
+                            f"({data.get('start_hour', '')}:00 - {data.get('end_hour', '')}:00)\n"
+                        )
+                    msg.set_content(body_txt)
                     try:
                         await aiosmtplib.send(
                             msg,

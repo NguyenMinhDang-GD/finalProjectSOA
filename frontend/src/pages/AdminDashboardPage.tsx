@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Trash2,
   Users,
+  Wrench,
   X,
 } from 'lucide-react';
 import { apiRequest, formatDateVN, formatHourRange, formatVND } from '../api/client';
@@ -30,7 +31,9 @@ import {
   Court,
   FinancialAuditLog,
   LocationItem,
+  MaintenanceBlock,
   NotificationLog,
+  OperationalAuditLog,
   PaymentTransaction,
   PricingRule,
   ReconciliationCase,
@@ -43,6 +46,8 @@ type AdminTab =
   | 'courts'
   | 'pricing'
   | 'bookings'
+  | 'maintenance'
+  | 'op_audit'
   | 'transactions'
   | 'reconciliation'
   | 'refunds'
@@ -95,6 +100,14 @@ export const AdminDashboardPage: React.FC = () => {
   const [newUserRole, setNewUserRole] = useState<UserRole>('STAFF');
 
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
+  const [maintenanceBlocks, setMaintenanceBlocks] = useState<MaintenanceBlock[]>([]);
+  const [opAuditLogs, setOpAuditLogs] = useState<OperationalAuditLog[]>([]);
+  const [maintCourtId, setMaintCourtId] = useState('');
+  const [maintDate, setMaintDate] = useState(() => new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10));
+  const [maintStartHour, setMaintStartHour] = useState(8);
+  const [maintEndHour, setMaintEndHour] = useState(10);
+  const [maintReason, setMaintReason] = useState('Bảo trì mặt sân & lưới định kỳ');
+
   const [message, setMessage] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [busyAction, setBusyAction] = useState(false);
@@ -132,6 +145,8 @@ export const AdminDashboardPage: React.FC = () => {
       apiRequest<ReconciliationCase[]>('/api/payments/admin/reconciliation'),
       apiRequest<RefundTransaction[]>('/api/payments/admin/refunds'),
       apiRequest<FinancialAuditLog[]>('/api/payments/admin/audit-logs'),
+      apiRequest<MaintenanceBlock[]>('/api/bookings/maintenance'),
+      apiRequest<OperationalAuditLog[]>('/api/bookings/admin/operational-audit'),
     ]);
 
     const labels = [
@@ -146,6 +161,8 @@ export const AdminDashboardPage: React.FC = () => {
       'Đối soát',
       'Hoàn tiền',
       'Nhật ký tài chính',
+      'Lịch bảo trì',
+      'Nhật ký vận hành',
     ];
 
     results.forEach((res, idx) => {
@@ -177,6 +194,8 @@ export const AdminDashboardPage: React.FC = () => {
     if (results[8].status === 'fulfilled') setReconciliationCases(results[8].value);
     if (results[9].status === 'fulfilled') setRefunds(results[9].value);
     if (results[10].status === 'fulfilled') setAuditLogs(results[10].value);
+    if (results[11].status === 'fulfilled') setMaintenanceBlocks(results[11].value);
+    if (results[12].status === 'fulfilled') setOpAuditLogs(results[12].value);
 
     setPartialErrors(failedParts);
     setLoading(false);
@@ -497,6 +516,8 @@ export const AdminDashboardPage: React.FC = () => {
       group: 'Vận hành đặt sân',
       items: [
         { key: 'bookings', label: `Đơn đặt (${bookings.length})`, icon: BarChart3 },
+        { key: 'maintenance', label: `Bảo trì sân (${maintenanceBlocks.length})`, icon: Wrench },
+        { key: 'op_audit', label: `Nhật ký vận hành (${opAuditLogs.length})`, icon: BarChart3 },
         { key: 'emails', label: `Email Log (${emails.length})`, icon: Mail },
       ],
     },
@@ -1560,6 +1581,198 @@ export const AdminDashboardPage: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </section>
+      )}
+
+      {tab === 'maintenance' && (
+        <div className="space-y-6">
+          <section className="bg-white rounded-2xl border border-[#D4D6CD] p-5">
+            <h2 className="font-display text-lg font-bold text-charcoal mb-3 flex items-center gap-2">
+              <Wrench className="w-5 h-5 text-court" />
+              <span>Tạo lịch bảo trì sân mới</span>
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+              <div>
+                <label className="block text-xs font-semibold text-court-muted mb-1">Sân</label>
+                <select
+                  value={maintCourtId || courts[0]?.id || ''}
+                  onChange={(e) => setMaintCourtId(e.target.value)}
+                  className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm bg-white"
+                >
+                  {courts.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-court-muted mb-1">Ngày bảo trì</label>
+                <input
+                  type="date"
+                  value={maintDate}
+                  onChange={(e) => setMaintDate(e.target.value)}
+                  className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-court-muted mb-1">Giờ bắt đầu</label>
+                <input
+                  type="number"
+                  min={6}
+                  max={22}
+                  value={maintStartHour}
+                  onChange={(e) => setMaintStartHour(Number(e.target.value))}
+                  className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-court-muted mb-1">Giờ kết thúc</label>
+                <input
+                  type="number"
+                  min={7}
+                  max={23}
+                  value={maintEndHour}
+                  onChange={(e) => setMaintEndHour(Number(e.target.value))}
+                  className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={busyAction}
+                  onClick={async () => {
+                    const targetCourt = maintCourtId || courts[0]?.id;
+                    if (!targetCourt) return;
+                    setBusyAction(true);
+                    try {
+                      await apiRequest('/api/bookings/admin/maintenance', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          court_id: targetCourt,
+                          play_date: maintDate,
+                          start_hour: maintStartHour,
+                          end_hour: maintEndHour,
+                          reason: maintReason,
+                        }),
+                      });
+                      notifyOk('Đã tạo lịch bảo trì sân.');
+                      await loadAll();
+                    } catch (err) {
+                      notifyErr(err);
+                    } finally {
+                      setBusyAction(false);
+                    }
+                  }}
+                >
+                  Tạo lịch bảo trì
+                </Button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-court-muted mb-1">Lý do bảo trì</label>
+              <input
+                type="text"
+                value={maintReason}
+                onChange={(e) => setMaintReason(e.target.value)}
+                className="w-full rounded-xl border border-[#D4D6CD] px-3 py-2 text-sm"
+              />
+            </div>
+          </section>
+
+          <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+            {maintenanceBlocks.length === 0 ? (
+              <div className="p-6">
+                <EmptyState title="Chưa có lịch bảo trì" description="Các khung giờ bảo trì sẽ hiển thị tại đây." />
+              </div>
+            ) : (
+              <table className="w-full text-sm text-left">
+                <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+                  <tr>
+                    <th className="px-4 py-3">Sân</th>
+                    <th className="px-4 py-3">Ngày</th>
+                    <th className="px-4 py-3">Khung giờ</th>
+                    <th className="px-4 py-3">Lý do</th>
+                    <th className="px-4 py-3">Trạng thái</th>
+                    <th className="px-4 py-3">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#ECEBE2]">
+                  {maintenanceBlocks.map((m) => (
+                    <tr key={m.id}>
+                      <td className="px-4 py-3 font-medium text-charcoal">{courts.find((c) => c.id === m.court_id)?.name || m.court_id}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{formatDateVN(m.play_date)}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{String(m.start_hour).padStart(2, '0')}:00 - {String(m.end_hour).padStart(2, '0')}:00</td>
+                      <td className="px-4 py-3 text-xs">{m.reason}</td>
+                      <td className="px-4 py-3"><StatusBadge status={m.status} /></td>
+                      <td className="px-4 py-3">
+                        {m.status === 'SCHEDULED' && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={busyAction}
+                            onClick={async () => {
+                              setBusyAction(true);
+                              try {
+                                await apiRequest(`/api/bookings/admin/maintenance/${m.id}/cancel`, {
+                                  method: 'POST',
+                                  body: JSON.stringify({}),
+                                });
+                                notifyOk('Đã hủy lịch bảo trì.');
+                                await loadAll();
+                              } catch (err) {
+                                notifyErr(err);
+                              } finally {
+                                setBusyAction(false);
+                              }
+                            }}
+                          >
+                            Hủy bảo trì
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        </div>
+      )}
+
+      {tab === 'op_audit' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+          {opAuditLogs.length === 0 ? (
+            <div className="p-6">
+              <EmptyState title="Chưa có nhật ký vận hành" description="Các thao tác đổi lịch, walk-in, bảo trì, no-show, hoàn tất sẽ hiển thị tại đây." />
+            </div>
+          ) : (
+            <table className="w-full text-sm text-left">
+              <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+                <tr>
+                  <th className="px-4 py-3">Thời gian</th>
+                  <th className="px-4 py-3">Đối tượng</th>
+                  <th className="px-4 py-3">Hành động</th>
+                  <th className="px-4 py-3">Chuyển trạng thái</th>
+                  <th className="px-4 py-3">Lý do</th>
+                  <th className="px-4 py-3">Người thực hiện</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#ECEBE2]">
+                {opAuditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{new Date(log.created_at).toLocaleString('vi-VN')}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{log.entity_type}: <strong>{log.entity_id}</strong></td>
+                    <td className="px-4 py-3 font-mono text-xs">{log.action}</td>
+                    <td className="px-4 py-3 font-mono text-xs">{log.previous_state || '—'} → {log.new_state || '—'}</td>
+                    <td className="px-4 py-3 text-xs">{log.reason || '—'}</td>
+                    <td className="px-4 py-3 text-xs">{log.actor} ({log.actor_role})</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </section>
       )}
 

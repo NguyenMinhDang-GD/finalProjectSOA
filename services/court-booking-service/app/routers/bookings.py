@@ -1,14 +1,19 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import uuid
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, status
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import get_db
 from app.metrics import AUTH_REJECTED_TOTAL
-from app.models import BookingOrder
+from app.models import (
+    BookingOrder,
+    BookingRescheduleHistory,
+    MaintenanceBlock,
+    OperationalAuditLog,
+)
 from app.schemas import (
     AdminStatsResponse,
     BookingAuthorizeRequest,
@@ -18,7 +23,17 @@ from app.schemas import (
     CancellationQuoteResponse,
     ClaimCheckinRequest,
     ClaimCheckinResponse,
+    CompleteBookingRequest,
     CreateBookingRequest,
+    CreateMaintenanceRequest,
+    MaintenanceBlockResponse,
+    NoShowRequest,
+    OperationalAuditLogResponse,
+    RescheduleBookingRequest,
+    RescheduleHistoryResponse,
+    RescheduleQuoteRequest,
+    RescheduleQuoteResponse,
+    WalkInBookingRequest,
 )
 from app.security import (
     get_current_claims,
@@ -33,6 +48,15 @@ from app.services.booking_service import (
     get_admin_stats,
     release_booking_slots,
     trigger_internal_refund,
+)
+from app.services.operations_service import (
+    cancel_maintenance_block,
+    complete_booking,
+    create_maintenance_block,
+    evaluate_reschedule_quote,
+    mark_booking_no_show,
+    record_operational_audit,
+    reschedule_booking,
 )
 
 router = APIRouter(prefix="/api/bookings", tags=["Bookings"])
@@ -278,6 +302,11 @@ async def internal_claim_checkin(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Đơn đặt sân đang ở trạng thái {order.status}, không thể check-in",
         )
+    if payload.expected_revision is not None and order.booking_revision != payload.expected_revision:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Vé QR thuộc phiên bản lịch cũ (v{payload.expected_revision}), phiên bản hiện tại là v{order.booking_revision}",
+        )
     if order.admission_status == "ADMITTED":
         if order.admission_ticket_id == payload.ticket_id:
             return ClaimCheckinResponse(
@@ -297,6 +326,18 @@ async def internal_claim_checkin(
     order.admission_ticket_id = payload.ticket_id
     order.checked_in_at = datetime.now(timezone.utc)
     order.checked_in_by = payload.staff_email
+    record_operational_audit(
+        db,
+        entity_type="BOOKING",
+        entity_id=order.booking_code,
+        action="BOOKING_ADMITTED",
+        actor=payload.staff_email,
+        actor_role="STAFF",
+        previous_state="NONE",
+        new_state="ADMITTED",
+        reason="Check-in QR hợp lệ tại sân",
+        metadata={"ticket_id": payload.ticket_id, "booking_revision": order.booking_revision},
+    )
     await db.commit()
     return ClaimCheckinResponse(
         admitted=True,
@@ -412,3 +453,187 @@ async def customer_cancel_booking(
             reason=cancel_reason,
         )
     return result
+
+
+# ----------------- B03: RESCHEDULING, WALK-IN, MAINTENANCE, NO-SHOW, COMPLETION & AUDIT -----------------
+
+
+@router.post("/{booking_code}/reschedule-quote", response_model=RescheduleQuoteResponse)
+async def get_reschedule_quote_endpoint(
+    booking_code: str,
+    payload: RescheduleQuoteRequest,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(
+        select(BookingOrder).options(selectinload(BookingOrder.slots)).where(BookingOrder.booking_code == booking_code.strip())
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt sân")
+    _enforce_booking_access(order, claims, x_guest_token, endpoint_label="reschedule_quote", allow_staff=True)
+    is_priv = bool(claims and claims.get("role") in ("STAFF", "ADMIN"))
+    return await evaluate_reschedule_quote(db, order, payload, is_privileged=is_priv)
+
+
+@router.post("/{booking_code}/reschedule", response_model=BookingResponse)
+async def reschedule_booking_endpoint(
+    booking_code: str,
+    payload: RescheduleBookingRequest,
+    request: Request,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(
+        select(BookingOrder).options(selectinload(BookingOrder.slots)).where(BookingOrder.booking_code == booking_code.strip())
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt sân")
+    _enforce_booking_access(order, claims, x_guest_token, endpoint_label="reschedule", allow_staff=True)
+    actor = str((claims or {}).get("email") or "guest")
+    actor_role = str((claims or {}).get("role") or "GUEST")
+    return await reschedule_booking(
+        db,
+        request.app.state.redis,
+        booking_code,
+        payload,
+        actor=actor,
+        actor_role=actor_role,
+    )
+
+
+@router.get("/{booking_code}/reschedule-history", response_model=list[RescheduleHistoryResponse])
+async def get_reschedule_history_endpoint(
+    booking_code: str,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(select(BookingOrder).where(BookingOrder.booking_code == booking_code.strip()))
+    if not order:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt sân")
+    _enforce_booking_access(order, claims, x_guest_token, endpoint_label="reschedule_history", allow_staff=True)
+    rows = (
+        await db.scalars(
+            select(BookingRescheduleHistory)
+            .where(BookingRescheduleHistory.booking_code == booking_code.strip())
+            .order_by(desc(BookingRescheduleHistory.created_at))
+        )
+    ).all()
+    return [RescheduleHistoryResponse.model_validate(r) for r in rows]
+
+
+@router.post("/staff/walk-in", response_model=BookingResponse, status_code=status.HTTP_201_CREATED)
+async def staff_walk_in_booking(
+    payload: WalkInBookingRequest,
+    request: Request,
+    claims: dict = Depends(require_roles("STAFF", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    fallback_email = payload.customer_email or f"walkin-{payload.customer_phone.strip()}@pickleball-walkin.vn"
+    create_payload = CreateBookingRequest(
+        court_id=payload.court_id,
+        play_date=payload.play_date,
+        hours=payload.hours,
+        customer_name=payload.customer_name,
+        customer_phone=payload.customer_phone,
+        customer_email=fallback_email,
+    )
+    return await create_booking(
+        db,
+        request.app.state.redis,
+        create_payload,
+        user_id=None,
+        booking_source="WALK_IN",
+        operator_email=str(claims.get("email") or "staff"),
+        operator_role=str(claims.get("role") or "STAFF"),
+    )
+
+
+@router.post("/staff/{booking_code}/no-show", response_model=BookingResponse)
+async def staff_mark_no_show(
+    booking_code: str,
+    payload: NoShowRequest,
+    claims: dict = Depends(require_roles("STAFF", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await mark_booking_no_show(
+        db,
+        booking_code,
+        payload,
+        actor_email=str(claims.get("email") or "staff"),
+        actor_role=str(claims.get("role") or "STAFF"),
+    )
+
+
+@router.post("/staff/{booking_code}/complete", response_model=BookingResponse)
+async def staff_complete_booking(
+    booking_code: str,
+    payload: CompleteBookingRequest,
+    claims: dict = Depends(require_roles("STAFF", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await complete_booking(
+        db,
+        booking_code,
+        payload,
+        actor_email=str(claims.get("email") or "staff"),
+        actor_role=str(claims.get("role") or "STAFF"),
+    )
+
+
+@router.get("/maintenance", response_model=list[MaintenanceBlockResponse])
+async def list_maintenance_blocks(
+    play_date: date | None = Query(default=None),
+    _: dict = Depends(require_roles("STAFF", "ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(MaintenanceBlock).order_by(desc(MaintenanceBlock.play_date), MaintenanceBlock.start_hour).limit(200)
+    if play_date:
+        stmt = stmt.where(MaintenanceBlock.play_date == play_date)
+    rows = (await db.scalars(stmt)).all()
+    return [MaintenanceBlockResponse.model_validate(r) for r in rows]
+
+
+@router.post("/admin/maintenance", response_model=MaintenanceBlockResponse, status_code=status.HTTP_201_CREATED)
+async def admin_create_maintenance(
+    payload: CreateMaintenanceRequest,
+    request: Request,
+    claims: dict = Depends(require_roles("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_maintenance_block(
+        db,
+        request.app.state.redis,
+        payload,
+        actor_email=str(claims.get("email") or "admin"),
+        actor_role=str(claims.get("role") or "ADMIN"),
+    )
+
+
+@router.post("/admin/maintenance/{block_id}/cancel", response_model=MaintenanceBlockResponse)
+async def admin_cancel_maintenance(
+    block_id: uuid.UUID,
+    claims: dict = Depends(require_roles("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await cancel_maintenance_block(
+        db,
+        block_id,
+        actor_email=str(claims.get("email") or "admin"),
+        actor_role=str(claims.get("role") or "ADMIN"),
+    )
+
+
+@router.get("/admin/operational-audit", response_model=list[OperationalAuditLogResponse])
+async def admin_list_operational_audit(
+    entity_id: str | None = Query(default=None),
+    _: dict = Depends(require_roles("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(OperationalAuditLog).order_by(desc(OperationalAuditLog.created_at)).limit(300)
+    if entity_id:
+        stmt = stmt.where(OperationalAuditLog.entity_id == entity_id.strip())
+    rows = (await db.scalars(stmt)).all()
+    return [OperationalAuditLogResponse.model_validate(r) for r in rows]
