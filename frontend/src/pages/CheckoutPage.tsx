@@ -173,7 +173,7 @@ export const CheckoutPage: React.FC = () => {
           {error}
         </AlertBanner>
         <div className="mt-4 text-center">
-          <Link to="/" className="text-sm font-bold text-court hover:underline">
+          <Link to="/book" className="text-sm font-bold text-court hover:underline">
             ← Quay lại trang đặt sân
           </Link>
         </div>
@@ -192,24 +192,72 @@ export const CheckoutPage: React.FC = () => {
   const mm = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
   const ss = String(secondsLeft % 60).padStart(2, '0');
 
+  const stepIndex =
+    booking.status === 'PAID' && ticket
+      ? 4
+      : booking.status === 'PAID'
+      ? 3
+      : payment?.status === 'SUCCEEDED'
+      ? 2
+      : 1;
+
+  const steps = ['Giữ chỗ', 'Thanh toán VietQR', 'Xác nhận đơn', 'Vé QR sẵn sàng'];
+
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+      {/* Truthful Asynchronous SOA Progress Strip (hidden on terminal cancel/expire) */}
+      {booking.status !== 'CANCELLED' && booking.status !== 'EXPIRED' && (
+        <nav
+          aria-label="Tiến trình xử lý đơn"
+          className="bg-white rounded-2xl border border-[#CFCFC4] px-4 py-3 no-print"
+        >
+          <ol className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            {steps.map((label, idx) => {
+              const num = idx + 1;
+              const done = stepIndex > num || (num === 4 && stepIndex === 4);
+              const active = stepIndex === num && !done;
+              return (
+                <li
+                  key={label}
+                  className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${
+                    done
+                      ? 'bg-[#E6F4EC] border-[#A7D7BA] text-[#14532D] font-semibold'
+                      : active
+                      ? 'bg-court text-white border-court font-semibold'
+                      : 'bg-warm-white border-[#E5E5DC] text-court-muted'
+                  }`}
+                >
+                  <span className="font-mono text-[11px] font-bold">0{num}</span>
+                  <span className="truncate">{label}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+      )}
+
       {error && <AlertBanner tone="error">{error}</AlertBanner>}
       {pollWarning && <AlertBanner tone="warning">{pollWarning}</AlertBanner>}
 
       {booking.status === 'PAID' ? (
         <div className="space-y-5">
-          <div className="bg-court text-white rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="bg-court text-white rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border border-[#23483D]">
             <div className="flex items-start gap-3">
               <CheckCircle2 className="w-8 h-8 text-ball-lime shrink-0 mt-0.5" aria-hidden="true" />
               <div>
-                <h1 className="text-xl sm:text-2xl font-bold">
-                  {ticket ? 'Đặt sân & Thanh toán thành công' : 'Đặt sân đã xác nhận — Đang chuẩn bị vé QR'}
-                </h1>
-                <p className="text-sm text-[#C7D6CD] mt-1">
+                <h1 className="font-display text-xl sm:text-2xl font-extrabold">
                   {ticket
-                    ? <>Vé QR đã được phát hành và gửi tới email <strong>{booking.customer_email}</strong>.</>
-                    : 'Hệ thống đang phát hành vé QR điện tử, trang sẽ tự động cập nhật trong giây lát.'}
+                    ? 'Đặt sân & Thanh toán thành công'
+                    : 'Đặt sân đã xác nhận — Đang chuẩn bị vé QR'}
+                </h1>
+                <p className="text-sm text-[#D1DDD6] mt-1">
+                  {ticket ? (
+                    <>
+                      Vé QR đã được phát hành và gửi tới email <strong>{booking.customer_email}</strong>.
+                    </>
+                  ) : (
+                    'Hệ thống đang phát hành vé QR điện tử, trang sẽ tự động cập nhật trong giây lát.'
+                  )}
                 </p>
               </div>
             </div>
@@ -230,7 +278,7 @@ export const CheckoutPage: React.FC = () => {
             totalAmount={booking.total_amount}
           />
 
-          <div className="rounded-xl bg-white border border-[#D4D6CD] px-4 py-3 text-xs text-court-muted flex items-center gap-2 no-print">
+          <div className="rounded-xl bg-white border border-[#CFCFC4] px-4 py-3 text-xs text-court-muted flex items-center gap-2 no-print">
             <Mail className="w-4 h-4 text-court shrink-0" aria-hidden="true" />
             <span>
               Nếu chưa thấy email trong hộp thư chính, vui lòng kiểm tra hộp thư thử nghiệm hoặc tra cứu lại bằng mã{' '}
@@ -239,7 +287,7 @@ export const CheckoutPage: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap justify-between items-center gap-3 pt-1 no-print">
-            <Link to="/" className="text-sm font-bold text-court hover:underline">
+            <Link to="/book" className="text-sm font-bold text-court hover:underline">
               ← Đặt thêm sân khác
             </Link>
             <Link to="/lookup" className="text-sm font-bold text-charcoal hover:underline">
@@ -248,16 +296,17 @@ export const CheckoutPage: React.FC = () => {
           </div>
         </div>
       ) : booking.status === 'CANCELLED' || booking.status === 'EXPIRED' ? (
-        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center space-y-4">
+        <div className="bg-white rounded-2xl border border-[#CFCFC4] p-8 text-center space-y-4">
           <XCircle className="w-12 h-12 text-[#B93829] mx-auto" aria-hidden="true" />
           <div>
             <StatusBadge status={booking.status} />
           </div>
-          <h1 className="text-xl font-bold text-charcoal">
+          <h1 className="font-display text-xl sm:text-2xl font-extrabold text-charcoal">
             Đơn đặt sân đã {booking.status === 'EXPIRED' ? 'hết hạn giữ chỗ' : 'bị hủy'}
           </h1>
           <p className="text-sm text-court-muted max-w-md mx-auto">
-            {booking.cancel_reason || 'Các khung giờ trước đó đã được giải phóng để người chơi khác đặt.'}
+            {booking.cancel_reason ||
+              'Các khung giờ trước đó đã được giải phóng để người chơi khác đặt.'}
           </p>
           {(payment?.reconciliation_status === 'COMPENSATION_REQUIRED' ||
             payment?.status === 'SUCCEEDED') && (
@@ -269,8 +318,8 @@ export const CheckoutPage: React.FC = () => {
                 <div className="text-xs space-y-1">
                   <p>
                     Hệ thống đã lưu giữ bằng chứng thanh toán{' '}
-                    <strong className="font-mono">{payment.provider_tx_id || payment.id}</strong>{' '}
-                    ({formatVND(payment.amount)}), nhưng đơn đặt sân không thể xác nhận do đã{' '}
+                    <strong className="font-mono">{payment.provider_tx_id || payment.id}</strong> (
+                    {formatVND(payment.amount)}), nhưng đơn đặt sân không thể xác nhận do đã{' '}
                     {booking.status === 'EXPIRED' ? 'hết hạn' : 'bị hủy'}.
                   </p>
                   {payment.reconciliation_note && (
@@ -281,34 +330,37 @@ export const CheckoutPage: React.FC = () => {
             </div>
           )}
           <Link
-            to="/"
-            className="inline-block bg-court hover:bg-court-soft text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+            to="/book"
+            className="inline-block bg-court hover:bg-court-soft text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors"
           >
             Đặt lịch mới
           </Link>
         </div>
       ) : payment?.status === 'SUCCEEDED' ? (
-        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center space-y-3">
+        <div className="bg-white rounded-2xl border border-[#CFCFC4] p-8 text-center space-y-3">
           <Clock className="w-10 h-10 text-court mx-auto animate-pulse" aria-hidden="true" />
-          <h1 className="text-xl font-bold text-charcoal">
+          <h1 className="font-display text-xl sm:text-2xl font-extrabold text-charcoal">
             Đã nhận thanh toán — Đang chờ xác nhận đặt sân
           </h1>
           <p className="text-sm text-court-muted max-w-md mx-auto">
-            Thanh toán cho đơn <strong className="font-mono text-charcoal">{booking.booking_code}</strong> đã được ghi nhận. Hệ thống đang hoàn tất xác nhận sân và sẽ tự động chuyển sang vé QR.
+            Thanh toán cho đơn{' '}
+            <strong className="font-mono text-charcoal">{booking.booking_code}</strong> đã được ghi nhận. Hệ thống đang hoàn tất xác nhận sân và sẽ tự động chuyển sang vé QR.
           </p>
         </div>
       ) : (
         <div className="space-y-5">
-          {/* Pending Payment Header */}
-          <div className="bg-white rounded-2xl border border-[#D4D6CD] overflow-hidden">
+          {/* Pending Payment Card */}
+          <div className="bg-white rounded-2xl border border-[#CFCFC4] overflow-hidden shadow-sm">
             <div className="bg-court text-white px-6 py-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="text-xs uppercase tracking-wider text-[#B7C9BE] font-semibold">
+                <div className="text-xs uppercase tracking-[0.16em] text-ball-lime font-bold">
                   Chờ thanh toán chuyển khoản
                 </div>
-                <h1 className="text-lg sm:text-xl font-bold font-mono mt-0.5">{booking.booking_code}</h1>
+                <h1 className="text-lg sm:text-xl font-bold font-mono mt-0.5">
+                  {booking.booking_code}
+                </h1>
               </div>
-              <div className="flex items-center gap-2 bg-court-deep px-3.5 py-2 rounded-xl border border-court-soft text-sm font-mono font-bold tabular-nums">
+              <div className="flex items-center gap-2 bg-court-deep px-3.5 py-2 rounded-xl border border-[#2D584B] text-sm font-mono font-bold tabular-nums">
                 <Clock className="w-4 h-4 text-ball-lime" aria-hidden="true" />
                 <span>
                   Giữ chỗ còn: {mm}:{ss}
@@ -319,7 +371,7 @@ export const CheckoutPage: React.FC = () => {
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
               {/* Booking Summary */}
               <div className="space-y-3 text-sm">
-                <h2 className="font-bold text-charcoal text-base pb-2 border-b border-[#ECEBE2]">
+                <h2 className="font-display font-bold text-charcoal text-lg pb-2 border-b border-[#ECEBE2]">
                   Chi tiết đơn đặt sân
                 </h2>
                 {booking.branch_name_snapshot && (
@@ -339,7 +391,9 @@ export const CheckoutPage: React.FC = () => {
                 {booking.location_address_snapshot && (
                   <div className="flex justify-between gap-3">
                     <span className="text-court-muted shrink-0">Địa chỉ:</span>
-                    <span className="text-right text-charcoal">{booking.location_address_snapshot}</span>
+                    <span className="text-right text-charcoal">
+                      {booking.location_address_snapshot}
+                    </span>
                   </div>
                 )}
                 <div className="flex justify-between">
@@ -348,11 +402,13 @@ export const CheckoutPage: React.FC = () => {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-court-muted">Ngày chơi:</span>
-                  <span className="font-semibold tabular-nums">{formatDateVN(booking.play_date)}</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {formatDateVN(booking.play_date)}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-court-muted">Khung giờ:</span>
-                  <span className="font-semibold tabular-nums">
+                  <span className="font-mono font-semibold tabular-nums">
                     {formatHourRange(booking.start_hour, booking.end_hour)}
                   </span>
                 </div>
@@ -360,9 +416,11 @@ export const CheckoutPage: React.FC = () => {
                   <span className="text-court-muted">Khách hàng:</span>
                   <span className="font-semibold">{booking.customer_name}</span>
                 </div>
-                <div className="flex justify-between pt-3 border-t border-[#ECEBE2] text-base">
+                <div className="flex justify-between pt-3 border-t border-[#ECEBE2] text-base items-baseline">
                   <span className="font-bold text-charcoal">Số tiền cần chuyển:</span>
-                  <span className="font-bold text-court tabular-nums">{formatVND(booking.total_amount)}</span>
+                  <span className="font-mono font-extrabold text-lg text-court tabular-nums">
+                    {formatVND(booking.total_amount)}
+                  </span>
                 </div>
 
                 <div className="pt-3">

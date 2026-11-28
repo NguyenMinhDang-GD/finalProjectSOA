@@ -10,11 +10,13 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  primary: 'bg-court text-white hover:bg-court-soft disabled:bg-court/50',
-  accent: 'bg-ball-lime text-court font-bold hover:bg-[#cbe844] disabled:opacity-50',
+  primary:
+    'bg-court text-white hover:bg-court-soft active:scale-[0.99] disabled:bg-court/50 shadow-sm',
+  accent:
+    'bg-ball-lime text-court font-bold hover:bg-[#cde94b] active:scale-[0.99] disabled:opacity-50 shadow-sm',
   secondary:
-    'bg-white text-charcoal border border-[#D4D6CD] hover:bg-[#ECEBE2] disabled:opacity-50',
-  danger: 'bg-[#B93829] text-white hover:bg-[#9E2D20] disabled:opacity-50',
+    'bg-white text-charcoal border border-[#D4D6CD] hover:bg-[#ECEBE2] active:scale-[0.99] disabled:opacity-50',
+  danger: 'bg-[#B93829] text-white hover:bg-[#9E2D20] active:scale-[0.99] disabled:opacity-50',
   ghost: 'bg-transparent text-court hover:bg-court/10 disabled:opacity-50',
 };
 
@@ -36,7 +38,7 @@ export const Button: React.FC<ButtonProps> = ({
   return (
     <button
       disabled={disabled || loading}
-      className={`inline-flex items-center justify-center gap-2 font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-court focus-visible:ring-offset-2 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-court focus-visible:ring-offset-2 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
       {...rest}
     >
       {children}
