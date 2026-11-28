@@ -35,6 +35,10 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS guest_token_expires_at TIMESTAMPTZ"))
             await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS guest_token_revoked_at TIMESTAMPTZ"))
             await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS lock_token VARCHAR(64)"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS admission_status VARCHAR(20) NOT NULL DEFAULT 'NONE'"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS admission_ticket_id VARCHAR(64)"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS checked_in_at TIMESTAMPTZ"))
+            await conn.execute(text("ALTER TABLE booking_orders ADD COLUMN IF NOT EXISTS checked_in_by VARCHAR(150)"))
         await conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_court_slot "

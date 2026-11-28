@@ -303,3 +303,85 @@ async def _setup_ticket_consumer() -> None:
             await message.reject(requeue=False)
 
     await queue.consume(_on_message)
+
+    fin_queue = await rmq_client.channel.declare_queue(
+        "notification.financial_events",
+        durable=True,
+        arguments={"x-dead-letter-exchange": DLX_NAME},
+    )
+    await fin_queue.bind(rmq_client.exchange, routing_key="refund.succeeded")
+    await fin_queue.bind(rmq_client.exchange, routing_key="refund.failed")
+
+    async def _on_fin_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+        try:
+            data = json.loads(message.body.decode("utf-8"))
+            event_name = str(data.get("event") or "")
+            booking_code = str(data.get("booking_code") or "").strip()
+            if not booking_code or not event_name:
+                raise ValueError("Missing booking_code or event")
+            recipient = str(data.get("customer_email") or "").strip()
+            event_id = str(data.get("event_id") or f"{event_name}:{booking_code}:{data.get('refund_code', '')}")
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(
+                    pg_insert(InboxEvent)
+                    .values(
+                        id=uuid.uuid4(),
+                        consumer_name="notification-service.financial_events",
+                        event_id=event_id,
+                        event_type=event_name,
+                        correlation_id=str(data.get("correlation_id") or event_id),
+                        status="PROCESSED",
+                        processed_at=datetime.now(timezone.utc),
+                    )
+                    .on_conflict_do_nothing(index_elements=["consumer_name", "event_id"])
+                )
+                if (res.rowcount or 0) == 0:
+                    await db.rollback()
+                    await message.ack()
+                    return
+                subject = (
+                    f"[Pickleball SOA] Hoàn tiền thành công - Mã đơn {booking_code}"
+                    if event_name == "refund.succeeded"
+                    else f"[Pickleball SOA] Thông báo hoàn tiền thất bại - Mã đơn {booking_code}"
+                )
+                if recipient:
+                    msg = EmailMessage()
+                    msg["From"] = settings.smtp_from
+                    msg["To"] = recipient
+                    msg["Subject"] = subject
+                    amount_str = f"{int(data.get('refunded_amount') or data.get('requested_amount') or 0):,} VNĐ"
+                    msg.set_content(
+                        f"Xin chào {data.get('customer_name') or 'Quý khách'},\n\n"
+                        f"Trạng thái hoàn tiền cho đơn {booking_code}: {event_name}.\n"
+                        f"Mã hoàn tiền: {data.get('refund_code', 'N/A')}\n"
+                        f"Số tiền: {amount_str}\n"
+                        f"Ghi chú: {data.get('reason', 'Hệ thống thanh toán giả lập (không phát sinh tiền thật).')}\n"
+                    )
+                    try:
+                        await aiosmtplib.send(
+                            msg,
+                            hostname=settings.smtp_host,
+                            port=settings.smtp_port,
+                            username=settings.smtp_user or None,
+                            password=settings.smtp_password or None,
+                            start_tls=settings.smtp_use_tls,
+                        )
+                    except Exception as smtp_exc:
+                        logger.warning("Optional financial email send failed for %s: %s", booking_code, smtp_exc)
+                db.add(
+                    NotificationLog(
+                        booking_code=booking_code,
+                        recipient_email=recipient or "system@pickleball-soa.vn",
+                        subject=subject,
+                        channel="EMAIL",
+                        status="SENT",
+                        retry_count=0,
+                    )
+                )
+                await db.commit()
+            await message.ack()
+        except Exception as exc:
+            logger.error("Failed processing financial notification: %s", exc)
+            await message.reject(requeue=False)
+
+    await fin_queue.consume(_on_fin_message)

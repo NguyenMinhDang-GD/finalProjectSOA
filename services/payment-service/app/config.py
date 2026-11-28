@@ -21,11 +21,19 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     internal_api_key: str = "soa-pickleball-internal-service-key-2026"
     webhook_secret: str = "soa-pickleball-webhook-hmac-secret-2026"
-    vietqr_bank_bin: str = "970422"
-    vietqr_account_no: str = "0123456789"
-    vietqr_account_name: str = "SAN PICKLEBALL SOA"
+    vietqr_bank_bin: str = "SIMULATED"
+    vietqr_account_no: str = "DEMO-ONLY"
+    vietqr_account_name: str = "THANH TOAN GIA LAP"
+    payment_mode: str = "MOCK_DEMO"  # MOCK_DEMO | MOCK_TEST | DISABLED
     enable_demo_webhook: bool = True
     cors_origins: str = "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
+
+    @property
+    def normalized_payment_mode(self) -> str:
+        mode = (self.payment_mode or "MOCK_DEMO").strip().upper()
+        if mode not in ("MOCK_DEMO", "MOCK_TEST", "DISABLED"):
+            return "DISABLED"
+        return mode
 
     @property
     def cors_origins_list(self) -> list[str]:
@@ -33,7 +41,15 @@ class Settings(BaseSettings):
 
     @property
     def is_demo_webhook_enabled(self) -> bool:
-        return self.enable_demo_webhook and self.app_env.lower() != "production"
+        return (
+            self.enable_demo_webhook
+            and self.app_env.lower() != "production"
+            and self.normalized_payment_mode in ("MOCK_DEMO", "MOCK_TEST")
+        )
+
+    @property
+    def is_payment_simulation_enabled(self) -> bool:
+        return self.normalized_payment_mode in ("MOCK_DEMO", "MOCK_TEST")
 
     def validate_production_settings(self) -> None:
         if self.app_env.lower() != "production":

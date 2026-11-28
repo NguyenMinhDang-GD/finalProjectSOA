@@ -28,14 +28,27 @@ import {
   BookingOrder,
   BranchItem,
   Court,
+  FinancialAuditLog,
   LocationItem,
   NotificationLog,
+  PaymentTransaction,
   PricingRule,
+  ReconciliationCase,
+  RefundTransaction,
   User,
   UserRole,
 } from '../types';
 
-type AdminTab = 'courts' | 'pricing' | 'bookings' | 'emails' | 'users';
+type AdminTab =
+  | 'courts'
+  | 'pricing'
+  | 'bookings'
+  | 'transactions'
+  | 'reconciliation'
+  | 'refunds'
+  | 'audit'
+  | 'emails'
+  | 'users';
 
 export const AdminDashboardPage: React.FC = () => {
   const { user } = useAuth();
@@ -50,6 +63,10 @@ export const AdminDashboardPage: React.FC = () => {
   const [courts, setCourts] = useState<Court[]>([]);
   const [rules, setRules] = useState<PricingRule[]>([]);
   const [bookings, setBookings] = useState<BookingOrder[]>([]);
+  const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
+  const [reconciliationCases, setReconciliationCases] = useState<ReconciliationCase[]>([]);
+  const [refunds, setRefunds] = useState<RefundTransaction[]>([]);
+  const [auditLogs, setAuditLogs] = useState<FinancialAuditLog[]>([]);
   const [emails, setEmails] = useState<NotificationLog[]>([]);
   const [usersList, setUsersList] = useState<User[]>([]);
 
@@ -111,6 +128,10 @@ export const AdminDashboardPage: React.FC = () => {
       apiRequest<BookingOrder[]>('/api/bookings/admin/list'),
       apiRequest<NotificationLog[]>('/api/notifications/logs'),
       apiRequest<User[]>('/api/auth/users'),
+      apiRequest<PaymentTransaction[]>('/api/payments/admin/transactions'),
+      apiRequest<ReconciliationCase[]>('/api/payments/admin/reconciliation'),
+      apiRequest<RefundTransaction[]>('/api/payments/admin/refunds'),
+      apiRequest<FinancialAuditLog[]>('/api/payments/admin/audit-logs'),
     ]);
 
     const labels = [
@@ -121,6 +142,10 @@ export const AdminDashboardPage: React.FC = () => {
       'Đơn đặt sân',
       'Email log',
       'Người dùng',
+      'Giao dịch',
+      'Đối soát',
+      'Hoàn tiền',
+      'Nhật ký tài chính',
     ];
 
     results.forEach((res, idx) => {
@@ -148,6 +173,10 @@ export const AdminDashboardPage: React.FC = () => {
     if (results[4].status === 'fulfilled') setBookings(results[4].value);
     if (results[5].status === 'fulfilled') setEmails(results[5].value);
     if (results[6].status === 'fulfilled') setUsersList(results[6].value);
+    if (results[7].status === 'fulfilled') setTransactions(results[7].value);
+    if (results[8].status === 'fulfilled') setReconciliationCases(results[8].value);
+    if (results[9].status === 'fulfilled') setRefunds(results[9].value);
+    if (results[10].status === 'fulfilled') setAuditLogs(results[10].value);
 
     setPartialErrors(failedParts);
     setLoading(false);
@@ -469,6 +498,15 @@ export const AdminDashboardPage: React.FC = () => {
       items: [
         { key: 'bookings', label: `Đơn đặt (${bookings.length})`, icon: BarChart3 },
         { key: 'emails', label: `Email Log (${emails.length})`, icon: Mail },
+      ],
+    },
+    {
+      group: 'Tài chính & Hoàn tiền',
+      items: [
+        { key: 'transactions', label: `Giao dịch (${transactions.length})`, icon: Coins },
+        { key: 'reconciliation', label: `Đối soát (${reconciliationCases.length})`, icon: ShieldCheck },
+        { key: 'refunds', label: `Hoàn tiền (${refunds.length})`, icon: RefreshCw },
+        { key: 'audit', label: `Nhật ký tài chính (${auditLogs.length})`, icon: BarChart3 },
       ],
     },
     {
@@ -1273,6 +1311,258 @@ export const AdminDashboardPage: React.FC = () => {
           </section>
         </div>
       )}
+      {tab === 'transactions' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+              <tr>
+                <th className="px-4 py-3">Mã đơn</th>
+                <th className="px-4 py-3">Trạng thái</th>
+                <th className="px-4 py-3">Cần thu</th>
+                <th className="px-4 py-3">Đã nhận</th>
+                <th className="px-4 py-3">Đã hoàn</th>
+                <th className="px-4 py-3">Đối soát</th>
+                <th className="px-4 py-3">Chế độ</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#ECEBE2]">
+              {transactions.map((tx) => (
+                <tr key={tx.id}>
+                  <td className="px-4 py-3 font-mono font-bold text-charcoal">{tx.booking_code}</td>
+                  <td className="px-4 py-3"><StatusBadge status={tx.status} /></td>
+                  <td className="px-4 py-3 font-mono">{formatVND(tx.expected_amount || tx.amount)}</td>
+                  <td className="px-4 py-3 font-mono text-court font-semibold">{formatVND(tx.received_amount)}</td>
+                  <td className="px-4 py-3 font-mono text-terracotta">{formatVND(tx.refunded_amount)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{tx.reconciliation_status || 'NONE'}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{tx.payment_mode}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {tab === 'reconciliation' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+              <tr>
+                <th className="px-4 py-3">Mã đơn</th>
+                <th className="px-4 py-3">Loại sai lệch</th>
+                <th className="px-4 py-3">Trạng thái</th>
+                <th className="px-4 py-3">Chênh lệch</th>
+                <th className="px-4 py-3">Ghi chú</th>
+                <th className="px-4 py-3 text-right">Xử lý</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#ECEBE2]">
+              {reconciliationCases.map((rc) => (
+                <tr key={rc.id}>
+                  <td className="px-4 py-3 font-mono font-bold text-charcoal">{rc.booking_code}</td>
+                  <td className="px-4 py-3 font-mono text-xs font-semibold">{rc.case_type}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{rc.status}</td>
+                  <td className="px-4 py-3 font-mono">{formatVND(rc.discrepancy_amount)}</td>
+                  <td className="px-4 py-3 text-xs text-court-muted max-w-xs">{rc.resolution_note || '—'}</td>
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                    {rc.status === 'OPEN' && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={busyAction}
+                        onClick={async () => {
+                          setBusyAction(true);
+                          try {
+                            await apiRequest(`/api/payments/admin/reconciliation/${rc.id}`, {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                status: 'IN_REVIEW',
+                                resolution_note: 'Admin đang kiểm tra hồ sơ đối soát',
+                              }),
+                            });
+                            notifyOk(`Đã chuyển ${rc.booking_code} sang IN_REVIEW`);
+                            await loadAll();
+                          } catch (err) {
+                            notifyErr(err);
+                          } finally {
+                            setBusyAction(false);
+                          }
+                        }}
+                      >
+                        Đánh dấu Đang xử lý
+                      </Button>
+                    )}
+                    {rc.status !== 'RESOLVED' && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        disabled={busyAction}
+                        onClick={async () => {
+                          setBusyAction(true);
+                          try {
+                            await apiRequest(`/api/payments/admin/reconciliation/${rc.id}`, {
+                              method: 'POST',
+                              body: JSON.stringify({
+                                status: 'RESOLVED',
+                                resolution_action: 'MANUAL_WRITE_OFF',
+                                resolution_note: 'Admin đã đối soát thủ công và xác nhận xử lý xong',
+                              }),
+                            });
+                            notifyOk(`Đã đóng đối soát ${rc.booking_code}`);
+                            await loadAll();
+                          } catch (err) {
+                            notifyErr(err);
+                          } finally {
+                            setBusyAction(false);
+                          }
+                        }}
+                      >
+                        Đóng đối soát
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {tab === 'refunds' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+              <tr>
+                <th className="px-4 py-3">Mã hoàn tiền</th>
+                <th className="px-4 py-3">Mã đơn</th>
+                <th className="px-4 py-3">Chính sách</th>
+                <th className="px-4 py-3">Số tiền</th>
+                <th className="px-4 py-3">Trạng thái</th>
+                <th className="px-4 py-3 text-right">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#ECEBE2]">
+              {refunds.map((rf) => (
+                <tr key={rf.id}>
+                  <td className="px-4 py-3 font-mono font-bold text-charcoal">{rf.refund_code}</td>
+                  <td className="px-4 py-3 font-mono">{rf.booking_code}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{rf.policy_tier} ({rf.policy_percent}%)</td>
+                  <td className="px-4 py-3 font-mono font-bold text-court">{formatVND(rf.requested_amount)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{rf.status}</td>
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                    {rf.status === 'REQUESTED' && (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="primary"
+                          disabled={busyAction}
+                          onClick={async () => {
+                            setBusyAction(true);
+                            try {
+                              await apiRequest(`/api/payments/admin/refunds/${rf.id}/approve`, {
+                                method: 'POST',
+                                body: JSON.stringify({ note: 'Admin phê duyệt hoàn tiền' }),
+                              });
+                              notifyOk(`Đã duyệt ${rf.refund_code}`);
+                              await loadAll();
+                            } catch (err) {
+                              notifyErr(err);
+                            } finally {
+                              setBusyAction(false);
+                            }
+                          }}
+                        >
+                          Duyệt
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={busyAction}
+                          onClick={async () => {
+                            setBusyAction(true);
+                            try {
+                              await apiRequest(`/api/payments/admin/refunds/${rf.id}/reject`, {
+                                method: 'POST',
+                                body: JSON.stringify({ rejection_reason: 'Không đủ điều kiện hoàn tiền' }),
+                              });
+                              notifyOk(`Đã từ chối ${rf.refund_code}`);
+                              await loadAll();
+                            } catch (err) {
+                              notifyErr(err);
+                            } finally {
+                              setBusyAction(false);
+                            }
+                          }}
+                        >
+                          Từ chối
+                        </Button>
+                      </>
+                    )}
+                    {(rf.status === 'APPROVED' || rf.status === 'FAILED') && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="primary"
+                        disabled={busyAction}
+                        onClick={async () => {
+                          setBusyAction(true);
+                          try {
+                            await apiRequest(`/api/payments/admin/refunds/${rf.id}/execute`, {
+                              method: 'POST',
+                              body: JSON.stringify({ outcome: 'SUCCEEDED' }),
+                            });
+                            notifyOk(`Đã thực thi hoàn tiền ${rf.refund_code}`);
+                            await loadAll();
+                          } catch (err) {
+                            notifyErr(err);
+                          } finally {
+                            setBusyAction(false);
+                          }
+                        }}
+                      >
+                        {rf.status === 'FAILED' ? 'Thử lại hoàn tiền' : 'Thực thi hoàn tiền'}
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {tab === 'audit' && (
+        <section className="bg-white rounded-2xl border border-[#D4D6CD] overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="bg-warm-white border-b border-[#D4D6CD] text-xs uppercase text-court-muted">
+              <tr>
+                <th className="px-4 py-3">Thời gian</th>
+                <th className="px-4 py-3">Mã đơn</th>
+                <th className="px-4 py-3">Hành động</th>
+                <th className="px-4 py-3">Chuyển trạng thái</th>
+                <th className="px-4 py-3">Số tiền</th>
+                <th className="px-4 py-3">Người thực hiện</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#ECEBE2]">
+              {auditLogs.map((al) => (
+                <tr key={al.id}>
+                  <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{new Date(al.created_at).toLocaleString('vi-VN')}</td>
+                  <td className="px-4 py-3 font-mono font-bold text-charcoal">{al.booking_code}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{al.action}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{al.previous_state || '—'} → {al.new_state || '—'}</td>
+                  <td className="px-4 py-3 font-mono">{formatVND(al.amount_vnd)}</td>
+                  <td className="px-4 py-3 text-xs">{al.actor} ({al.actor_role})</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
         </>
       )}
         </div>

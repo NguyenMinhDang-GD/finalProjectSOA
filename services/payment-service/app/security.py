@@ -2,7 +2,7 @@ import hmac
 from typing import Any
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
 
@@ -59,6 +59,30 @@ def is_valid_internal_key(x_internal_key: str | None) -> bool:
         and x_internal_key
         and hmac.compare_digest(x_internal_key, settings.internal_api_key)
     )
+
+
+def verify_internal_key(x_internal_key: str | None = Header(default=None)) -> None:
+    if not is_valid_internal_key(x_internal_key):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Internal key không hợp lệ")
+
+
+async def get_current_claims(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict[str, Any]:
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Thiếu token xác thực")
+    claims = _decode(credentials.credentials)
+    await verify_user_active(claims)
+    return claims
+
+
+def require_roles(*allowed_roles: str):
+    async def _dep(claims: dict[str, Any] = Depends(get_current_claims)) -> dict[str, Any]:
+        if claims.get("role") not in allowed_roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Không đủ quyền truy cập")
+        return claims
+
+    return _dep
 
 
 async def authorize_booking_access(

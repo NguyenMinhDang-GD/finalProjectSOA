@@ -19,18 +19,24 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "postgresql":
-            await conn.execute(
-                text("ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS reconciliation_status VARCHAR(40) NOT NULL DEFAULT 'NONE'")
-            )
-            await conn.execute(
-                text("ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS reconciliation_note TEXT")
-            )
-            await conn.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_provider_tx_id "
-                    "ON payment_transactions (provider_tx_id) WHERE provider_tx_id IS NOT NULL"
-                )
-            )
+            alter_statements = [
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS reconciliation_status VARCHAR(40) NOT NULL DEFAULT 'NONE'",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS reconciliation_note TEXT",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS expected_amount INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS received_amount INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS refunded_amount INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS currency VARCHAR(10) NOT NULL DEFAULT 'VND'",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(20) NOT NULL DEFAULT 'MOCK_DEMO'",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS simulation_notice TEXT NOT NULL DEFAULT 'THANH TOAN GIA LAP'",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS failure_reason TEXT",
+                "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ",
+                "UPDATE payment_transactions SET expected_amount = CAST(ROUND(amount) AS INTEGER) WHERE expected_amount = 0",
+                "UPDATE payment_transactions SET received_amount = expected_amount WHERE status = 'SUCCEEDED' AND received_amount = 0",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_provider_tx_id ON payment_transactions (provider_tx_id) WHERE provider_tx_id IS NOT NULL",
+            ]
+            for stmt in alter_statements:
+                await conn.execute(text(stmt))
 
     await rmq_client.connect()
     await start_booking_lifecycle_consumer()

@@ -6,11 +6,13 @@ import { Button } from '../components/ui/Button';
 import { AlertBanner, EmptyState, LoadingSkeleton } from '../components/ui/FeedbackStates';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
-import { BookingOrder } from '../types';
+import { CancellationQuote, RefundTransaction, BookingOrder } from '../types';
 
 export const LookupPage: React.FC = () => {
   const [code, setCode] = useState('');
   const [booking, setBooking] = useState<BookingOrder | null>(null);
+  const [quote, setQuote] = useState<CancellationQuote | null>(null);
+  const [refunds, setRefunds] = useState<RefundTransaction[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -20,13 +22,36 @@ export const LookupPage: React.FC = () => {
     setLoading(true);
     setError('');
     setBooking(null);
+    setQuote(null);
+    setRefunds([]);
     try {
+      const targetCode = code.trim();
       const data = await apiRequest<BookingOrder>(
-        `/api/bookings/lookup/${code.trim()}`,
+        `/api/bookings/lookup/${targetCode}`,
         {},
-        code.trim()
+        targetCode
       );
       setBooking(data);
+      try {
+        const q = await apiRequest<CancellationQuote>(
+          `/api/bookings/${targetCode}/cancellation-quote`,
+          {},
+          targetCode
+        );
+        setQuote(q);
+      } catch {
+        // Optional
+      }
+      try {
+        const r = await apiRequest<RefundTransaction[]>(
+          `/api/payments/booking/${targetCode}/refunds`,
+          {},
+          targetCode
+        );
+        setRefunds(r);
+      } catch {
+        // Optional
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không tìm thấy đơn đặt sân');
     } finally {
@@ -121,6 +146,31 @@ export const LookupPage: React.FC = () => {
                 </span>
               </div>
             </div>
+
+            {quote && (
+              <div className="pt-2 border-t border-[#DCDCD2] text-xs space-y-1">
+                <div className="font-semibold text-charcoal">
+                  Chính sách hủy: {quote.message}
+                </div>
+                {quote.eligible && quote.estimated_refund_amount > 0 && (
+                  <div className="text-court font-mono font-bold">
+                    Ước tính hoàn tiền: {formatVND(quote.estimated_refund_amount)} ({quote.refund_percent}%)
+                  </div>
+                )}
+              </div>
+            )}
+
+            {refunds.length > 0 && (
+              <div className="pt-2 border-t border-[#DCDCD2] text-xs space-y-1">
+                <div className="font-semibold text-charcoal">Trạng thái hoàn tiền:</div>
+                {refunds.map((rf) => (
+                  <div key={rf.id} className="flex justify-between gap-2 font-mono">
+                    <span>{rf.refund_code} ({rf.status})</span>
+                    <span>{formatVND(rf.refunded_amount || rf.requested_amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="pt-3 border-t border-[#DCDCD2] flex justify-end">
               <Link

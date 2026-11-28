@@ -1,7 +1,8 @@
+import hmac
 from typing import Any
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
 
@@ -69,6 +70,13 @@ def require_roles(*allowed_roles: str):
         return claims
 
     return _dep
+
+
+def verify_internal_key(x_internal_key: str | None = Header(default=None)) -> None:
+    if not settings.internal_api_key or not x_internal_key or not hmac.compare_digest(
+        x_internal_key, settings.internal_api_key
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Internal key không hợp lệ")
 
 
 async def authorize_booking_access(

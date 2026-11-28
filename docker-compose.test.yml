@@ -109,9 +109,7 @@ services:
       JWT_SECRET: test-only-jwt-secret-p01
       INTERNAL_API_KEY: test-only-internal-key-p01
       WEBHOOK_SECRET: test-only-webhook-secret-p01
-      VIETQR_BANK_BIN: "970422"
-      VIETQR_ACCOUNT_NO: "0000000000"
-      VIETQR_ACCOUNT_NAME: "TEST PICKLEBALL"
+      PAYMENT_MODE: MOCK_TEST
       ENABLE_DEMO_WEBHOOK: "true"
     ports:
       - "18003:8003"

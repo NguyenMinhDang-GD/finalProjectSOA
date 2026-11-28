@@ -199,8 +199,37 @@ class BookingAuthorizeResponse(BaseModel):
     reason: str | None = None
 
 
+class ClaimCheckinRequest(BaseModel):
+    ticket_id: str = Field(min_length=4, max_length=64)
+    staff_email: str = Field(min_length=2, max_length=150)
+
+
+class ClaimCheckinResponse(BaseModel):
+    admitted: bool
+    already_admitted_same_ticket: bool = False
+    booking_code: str
+    status: str
+    admission_status: str
+    message: str
+
+
 class CancelBookingRequest(BaseModel):
-    reason: str = Field(default="Khách hàng hủy trước khi thanh toán", max_length=300)
+    reason: str = Field(default="Khách hàng hủy đặt sân", max_length=300)
+    admin_exception: bool = False
+    override_refund_percent: int | None = Field(default=None, ge=0, le=100)
+
+
+class CancellationQuoteResponse(BaseModel):
+    booking_code: str
+    status: str
+    eligible: bool
+    is_checked_in: bool = False
+    hours_until_play: float
+    policy_tier: str
+    refund_percent: int
+    total_amount: int
+    estimated_refund_amount: int
+    message: str
 
 
 class AdminStatsResponse(BaseModel):

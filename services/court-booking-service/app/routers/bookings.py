@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import uuid
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,9 @@ from app.schemas import (
     BookingAuthorizeResponse,
     BookingResponse,
     CancelBookingRequest,
+    CancellationQuoteResponse,
+    ClaimCheckinRequest,
+    ClaimCheckinResponse,
     CreateBookingRequest,
 )
 from app.security import (
@@ -26,8 +29,10 @@ from app.security import (
 )
 from app.services.booking_service import (
     create_booking,
+    evaluate_cancellation_policy,
     get_admin_stats,
     release_booking_slots,
+    trigger_internal_refund,
 )
 
 router = APIRouter(prefix="/api/bookings", tags=["Bookings"])
@@ -139,7 +144,7 @@ async def admin_cancel_booking(
     booking_code: str,
     payload: CancelBookingRequest,
     request: Request,
-    _: dict = Depends(require_roles("ADMIN")),
+    claims: dict = Depends(require_roles("ADMIN")),
     db: AsyncSession = Depends(get_db),
 ):
     order = await db.scalar(
@@ -151,6 +156,53 @@ async def admin_cancel_booking(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
     if order.status in ("CANCELLED", "EXPIRED"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Đơn đã ở trạng thái hủy hoặc hết hạn")
+
+    quote = await evaluate_cancellation_policy(order)
+    if quote["is_checked_in"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vé đã check-in vào sân, không thể hủy đơn",
+        )
+
+    refund_snapshot = None
+    if order.status == "PAID":
+        if payload.admin_exception:
+            if not payload.reason or len(payload.reason.strip()) < 3:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Hủy ngoại lệ Admin bắt buộc phải nhập lý do",
+                )
+            pct = payload.override_refund_percent if payload.override_refund_percent is not None else 100
+            refund_amt = int(round(quote["total_amount"] * pct / 100))
+            tier = "ADMIN_EXCEPTION"
+            override_reason = payload.reason.strip()
+        else:
+            pct = quote["refund_percent"]
+            refund_amt = quote["estimated_refund_amount"]
+            tier = quote["policy_tier"]
+            override_reason = None
+
+        refund_snapshot = {
+            "policy_tier": tier,
+            "policy_percent": pct,
+            "refund_amount_vnd": refund_amt,
+            "admin_override_reason": override_reason,
+            "cancelled_by": str(claims.get("email") or "admin"),
+        }
+        result = await release_booking_slots(
+            db, request.app.state.redis, order, "CANCELLED", payload.reason, refund_snapshot=refund_snapshot
+        )
+        if refund_amt > 0:
+            await trigger_internal_refund(
+                booking_code=result.booking_code,
+                requested_amount=refund_amt,
+                policy_tier=tier,
+                policy_percent=pct,
+                reason=payload.reason,
+                admin_override_reason=override_reason,
+            )
+        return result
+
     return await release_booking_slots(db, request.app.state.redis, order, "CANCELLED", payload.reason)
 
 
@@ -202,6 +254,60 @@ async def internal_get_booking(
     return BookingResponse.model_validate(order)
 
 
+@router.post("/internal/{booking_code}/claim-checkin", response_model=ClaimCheckinResponse)
+async def internal_claim_checkin(
+    booking_code: str,
+    payload: ClaimCheckinRequest,
+    _: None = Depends(verify_internal_key),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(
+        select(BookingOrder)
+        .where(BookingOrder.booking_code == booking_code.strip())
+        .with_for_update()
+    )
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
+    if order.status in ("CANCELLED", "EXPIRED"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Đơn đặt sân đã bị hủy hoặc hết hạn, vé không còn hiệu lực check-in",
+        )
+    if order.status != "PAID":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Đơn đặt sân đang ở trạng thái {order.status}, không thể check-in",
+        )
+    if order.admission_status == "ADMITTED":
+        if order.admission_ticket_id == payload.ticket_id:
+            return ClaimCheckinResponse(
+                admitted=True,
+                already_admitted_same_ticket=True,
+                booking_code=order.booking_code,
+                status=order.status,
+                admission_status=order.admission_status,
+                message="Vé đã được ghi nhận vào sân (idempotent recovery)",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Đơn đặt sân đã được check-in trước đó",
+        )
+
+    order.admission_status = "ADMITTED"
+    order.admission_ticket_id = payload.ticket_id
+    order.checked_in_at = datetime.now(timezone.utc)
+    order.checked_in_by = payload.staff_email
+    await db.commit()
+    return ClaimCheckinResponse(
+        admitted=True,
+        already_admitted_same_ticket=False,
+        booking_code=order.booking_code,
+        status=order.status,
+        admission_status=order.admission_status,
+        message="Đã cấp quyền check-in hợp lệ",
+    )
+
+
 @router.post("/internal/{booking_code}/authorize", response_model=BookingAuthorizeResponse)
 async def internal_authorize_booking(
     booking_code: str,
@@ -230,10 +336,29 @@ async def internal_authorize_booking(
     )
 
 
+@router.get("/{booking_code}/cancellation-quote", response_model=CancellationQuoteResponse)
+async def get_cancellation_quote(
+    booking_code: str,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(
+        select(BookingOrder)
+        .options(selectinload(BookingOrder.slots))
+        .where(BookingOrder.booking_code == booking_code.strip())
+    )
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
+    _enforce_booking_access(order, claims, x_guest_token, endpoint_label="cancellation_quote", allow_staff=True)
+    return CancellationQuoteResponse(**(await evaluate_cancellation_policy(order)))
+
+
 @router.post("/{booking_code}/cancel", response_model=BookingResponse)
 async def customer_cancel_booking(
     booking_code: str,
     request: Request,
+    payload: CancelBookingRequest | None = Body(default=None),
     claims: dict | None = Depends(get_optional_claims),
     x_guest_token: str | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
@@ -246,11 +371,44 @@ async def customer_cancel_booking(
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
     _enforce_booking_access(order, claims, x_guest_token, endpoint_label="cancel", allow_staff=False)
-    if order.status != "PENDING_PAYMENT":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Chỉ có thể hủy đơn khi chưa thanh toán. Đơn đã thanh toán vui lòng liên hệ Admin.",
+    if order.status in ("CANCELLED", "EXPIRED"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Đơn đã ở trạng thái hủy hoặc hết hạn")
+
+    cancel_reason = (payload.reason.strip() if payload and payload.reason else "") or "Khách hàng hủy đặt sân"
+    if order.status == "PENDING_PAYMENT":
+        return await release_booking_slots(
+            db, request.app.state.redis, order, "CANCELLED", cancel_reason
         )
-    return await release_booking_slots(
-        db, request.app.state.redis, order, "CANCELLED", "Khách hàng hủy trước khi thanh toán"
+
+    quote = await evaluate_cancellation_policy(order)
+    if quote["is_checked_in"] or not quote["eligible"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=quote["message"],
+        )
+
+    actor = str((claims or {}).get("email") or "customer")
+    refund_amt = quote["estimated_refund_amount"]
+    refund_snapshot = {
+        "policy_tier": quote["policy_tier"],
+        "policy_percent": quote["refund_percent"],
+        "refund_amount_vnd": refund_amt,
+        "cancelled_by": actor,
+    }
+    result = await release_booking_slots(
+        db,
+        request.app.state.redis,
+        order,
+        "CANCELLED",
+        cancel_reason,
+        refund_snapshot=refund_snapshot,
     )
+    if refund_amt > 0:
+        await trigger_internal_refund(
+            booking_code=result.booking_code,
+            requested_amount=refund_amt,
+            policy_tier=quote["policy_tier"],
+            policy_percent=quote["refund_percent"],
+            reason=cancel_reason,
+        )
+    return result

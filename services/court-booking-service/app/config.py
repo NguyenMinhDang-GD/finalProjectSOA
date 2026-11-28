@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "soa-pickleball-jwt-super-secret-key-2026"
     jwt_algorithm: str = "HS256"
     auth_service_url: str = "http://auth-service:8001"
+    payment_service_url: str = "http://payment-service:8003"
+    checkin_service_url: str = "http://checkin-qr-service:8004"
     internal_api_key: str = "soa-pickleball-internal-service-key-2026"
     cors_origins: str = "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173"
     lock_ttl_seconds: int = 900  # 15 minutes

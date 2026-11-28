@@ -6,10 +6,27 @@ from app.config import settings
 from app.database import get_db
 from app.models import CheckinTicket
 from app.schemas import ScanQRRequest, ScanQRResponse, TicketResponse
-from app.security import authorize_booking_access, get_optional_claims, require_roles
+from app.security import authorize_booking_access, get_optional_claims, require_roles, verify_internal_key
 from app.services.checkin_service import generate_qr_base64, scan_and_checkin
 
 router = APIRouter(prefix="/api/checkin", tags=["QR Tickets & Check-in"])
+
+
+@router.get("/internal/ticket/{booking_code}")
+async def internal_get_ticket_status(
+    booking_code: str,
+    _: None = Depends(verify_internal_key),
+    db: AsyncSession = Depends(get_db),
+):
+    ticket = await db.scalar(select(CheckinTicket).where(CheckinTicket.booking_code == booking_code.strip()))
+    if not ticket:
+        return {"exists": False, "booking_code": booking_code.strip(), "status": None}
+    return {
+        "exists": True,
+        "booking_code": ticket.booking_code,
+        "status": ticket.status,
+        "checked_in_at": ticket.checked_in_at.isoformat() if ticket.checked_in_at else None,
+    }
 
 
 @router.get("/ticket/{booking_code}", response_model=TicketResponse)

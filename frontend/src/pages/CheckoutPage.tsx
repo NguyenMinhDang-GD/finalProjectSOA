@@ -7,7 +7,7 @@ import { AlertBanner, ConfirmDialog, LoadingSkeleton } from '../components/ui/Fe
 import { QrTicketCard } from '../components/ui/QrTicketCard';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { useAuth } from '../context/AuthContext';
-import { BookingOrder, CheckinTicket, PaymentTransaction } from '../types';
+import { BookingOrder, CancellationQuote, CheckinTicket, PaymentTransaction, RefundTransaction } from '../types';
 
 export const CheckoutPage: React.FC = () => {
   const { user } = useAuth();
@@ -15,10 +15,13 @@ export const CheckoutPage: React.FC = () => {
   const [booking, setBooking] = useState<BookingOrder | null>(null);
   const [payment, setPayment] = useState<PaymentTransaction | null>(null);
   const [ticket, setTicket] = useState<CheckinTicket | null>(null);
+  const [refunds, setRefunds] = useState<RefundTransaction[]>([]);
+  const [cancelQuote, setCancelQuote] = useState<CancellationQuote | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [error, setError] = useState('');
   const [pollWarning, setPollWarning] = useState('');
   const [simulating, setSimulating] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -99,6 +102,16 @@ export const CheckoutPage: React.FC = () => {
         } catch {
           // Ticket issuance is asynchronous via RabbitMQ
         }
+        try {
+          const q = await apiRequest<CancellationQuote>(
+            `/api/bookings/${bookingCode}/cancellation-quote`,
+            {},
+            bookingCode
+          );
+          setCancelQuote(q);
+        } catch {
+          // Optional
+        }
       } else if (b.status === 'CANCELLED' || b.status === 'EXPIRED') {
         try {
           const p = await apiRequest<PaymentTransaction>(
@@ -109,6 +122,16 @@ export const CheckoutPage: React.FC = () => {
           setPayment(p);
         } catch {
           // No payment record exists for this cancelled/expired booking
+        }
+        try {
+          const r = await apiRequest<RefundTransaction[]>(
+            `/api/payments/booking/${bookingCode}/refunds`,
+            {},
+            bookingCode
+          );
+          setRefunds(r);
+        } catch {
+          // Optional
         }
       }
     } catch (err) {
@@ -162,18 +185,42 @@ export const CheckoutPage: React.FC = () => {
     copyTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleSimulatePayment = async () => {
+  const handleSimulatePayment = async (
+    outcome: 'SUCCEEDED' | 'PROCESSING' | 'FAILED' | 'UNDERPAID' | 'OVERPAID' = 'SUCCEEDED'
+  ) => {
     if (!bookingCode) return;
     setSimulating(true);
     setError('');
     try {
-      await apiRequest(`/api/payments/simulate-webhook/${bookingCode}`, { method: 'POST' });
-      window.setTimeout(() => loadData(), 600);
-      window.setTimeout(() => loadData(), 1600);
+      await apiRequest(`/api/payments/simulate/${bookingCode}`, {
+        method: 'POST',
+        body: JSON.stringify({ outcome }),
+      });
+      window.setTimeout(() => loadData(), 400);
+      window.setTimeout(() => loadData(), 1400);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không thể mô phỏng thanh toán');
     } finally {
       setSimulating(false);
+    }
+  };
+
+  const handleRetryPayment = async () => {
+    if (!bookingCode) return;
+    setRetrying(true);
+    setError('');
+    try {
+      const updated = await apiRequest<PaymentTransaction>(
+        `/api/payments/booking/${bookingCode}/retry`,
+        { method: 'POST' },
+        bookingCode
+      );
+      setPayment(updated);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không thể thử lại thanh toán');
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -231,7 +278,7 @@ export const CheckoutPage: React.FC = () => {
       ? 2
       : 1;
 
-  const steps = ['Giữ chỗ', 'Thanh toán VietQR', 'Xác nhận đơn', 'Vé QR sẵn sàng'];
+  const steps = ['Giữ chỗ', 'Thanh toán giả lập', 'Xác nhận đơn', 'Vé QR sẵn sàng'];
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-5">
@@ -308,13 +355,31 @@ export const CheckoutPage: React.FC = () => {
             totalAmount={booking.total_amount}
           />
 
-          <div className="rounded-xl bg-white border border-[#CFCFC4] px-4 py-3 text-xs text-court-muted flex items-center gap-2 no-print">
-            <Mail className="w-4 h-4 text-court shrink-0" aria-hidden="true" />
-            <span>
-              Nếu chưa thấy email trong hộp thư chính, vui lòng kiểm tra hộp thư thử nghiệm hoặc tra cứu lại bằng mã{' '}
-              <strong className="font-mono text-charcoal">{booking.booking_code}</strong>.
-            </span>
+          <div className="rounded-xl bg-white border border-[#CFCFC4] px-4 py-3 text-xs text-court-muted flex flex-wrap items-center justify-between gap-3 no-print">
+            <div className="flex items-center gap-2">
+              <Mail className="w-4 h-4 text-court shrink-0" aria-hidden="true" />
+              <span>
+                Nếu chưa thấy email trong hộp thư chính, vui lòng kiểm tra hộp thư thử nghiệm hoặc tra cứu lại bằng mã{' '}
+                <strong className="font-mono text-charcoal">{booking.booking_code}</strong>.
+              </span>
+            </div>
+            {cancelQuote?.eligible && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => setConfirmCancelOpen(true)}
+              >
+                Hủy đơn ({cancelQuote.refund_percent}% hoàn tiền)
+              </Button>
+            )}
           </div>
+
+          {payment && payment.received_amount > payment.expected_amount && (
+            <AlertBanner tone="warning" title="Ghi nhận thanh toán dư — Đang chờ đối soát hoàn phần dư">
+              Hệ thống đã nhận {formatVND(payment.received_amount)} (vượt {formatVND(payment.received_amount - payment.expected_amount)} so với giá đơn {formatVND(payment.expected_amount)}).
+            </AlertBanner>
+          )}
 
           <div className="flex flex-wrap justify-between items-center gap-3 pt-1 no-print">
             <Link to="/book" className="text-sm font-bold text-court hover:underline">
@@ -357,6 +422,27 @@ export const CheckoutPage: React.FC = () => {
                   )}
                 </div>
               </AlertBanner>
+            </div>
+          )}
+          {refunds.length > 0 && (
+            <div className="max-w-lg mx-auto text-left space-y-2">
+              {refunds.map((rf) => (
+                <AlertBanner
+                  key={rf.id}
+                  tone={rf.status === 'SUCCEEDED' ? 'info' : rf.status === 'FAILED' || rf.status === 'REJECTED' ? 'error' : 'warning'}
+                  title={`Hoàn tiền ${rf.refund_code} — ${rf.status}`}
+                >
+                  <div className="text-xs space-y-1">
+                    <p>
+                      Số tiền yêu cầu: <strong>{formatVND(rf.requested_amount)}</strong> ({rf.policy_percent}% • {rf.policy_tier})
+                    </p>
+                    {rf.refunded_amount > 0 && (
+                      <p>Đã hoàn: <strong>{formatVND(rf.refunded_amount)}</strong></p>
+                    )}
+                    {rf.failure_reason && <p>Lý do lỗi: {rf.failure_reason}</p>}
+                  </div>
+                </AlertBanner>
+              ))}
             </div>
           )}
           <Link
@@ -465,40 +551,67 @@ export const CheckoutPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* VietQR Transfer Panel */}
+              {/* Simulated Payment QR Panel (Non-financial Demo Only) */}
               <div className="bg-warm-white rounded-2xl border border-[#D4D6CD] p-5 text-center">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-bold uppercase tracking-wide mb-2">
+                  THANH TOÁN GIẢ LẬP • KHÔNG PHẢI TIỀN THẬT
+                </div>
                 <h2 className="text-sm font-bold text-charcoal mb-3">
-                  Quét mã VietQR bằng ứng dụng Ngân hàng
+                  Mã QR Mô phỏng Trình diễn (Không kết nối ngân hàng thật)
                 </h2>
                 {payment?.qr_image_url ? (
                   <div className="bg-white p-3 rounded-xl border border-[#D4D6CD] inline-block shadow-sm">
                     <img
                       src={payment.qr_image_url}
-                      alt={`Mã VietQR thanh toán đơn ${booking.booking_code}`}
-                      className="w-52 h-52 object-contain block"
+                      alt={`Mã QR thanh toán giả lập đơn ${booking.booking_code}`}
+                      className="w-52 h-56 object-contain block"
                     />
                   </div>
                 ) : (
                   <div className="h-52 flex items-center justify-center text-sm text-court-muted">
-                    Đang tạo mã VietQR...
+                    Đang tạo phiên thanh toán giả lập...
+                  </div>
+                )}
+
+                {payment?.status === 'FAILED' && (
+                  <div className="mt-4 text-left space-y-2">
+                    <AlertBanner tone="error" title="Thanh toán giả lập thất bại">
+                      <p className="text-xs">{payment.failure_reason || 'Giao dịch bị từ chối trong chế độ mô phỏng.'}</p>
+                    </AlertBanner>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      loading={retrying}
+                      onClick={handleRetryPayment}
+                      className="w-full"
+                    >
+                      Thử lại thanh toán
+                    </Button>
+                  </div>
+                )}
+
+                {payment?.status === 'PROCESSING' && (
+                  <div className="mt-4 text-left">
+                    <AlertBanner tone="info" title="Đang xử lý thanh toán giả lập">
+                      <p className="text-xs">Giao dịch đang ở trạng thái PROCESSING, hệ thống đang chờ kết quả cuối.</p>
+                    </AlertBanner>
                   </div>
                 )}
 
                 <div className="mt-4 bg-white rounded-xl border border-[#D4D6CD] p-3.5 text-left text-xs space-y-2">
-                  <div className="flex justify-between gap-2">
-                    <span className="text-court-muted">Chủ tài khoản:</span>
-                    <span className="font-bold text-charcoal">
-                      {payment?.bank_account_name || 'SAN PICKLEBALL SOA'}
-                    </span>
+                  <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded-lg p-2 leading-relaxed">
+                    {payment?.simulation_notice ||
+                      'THANH TOÁN GIẢ LẬP — Chỉ dùng cho kiểm thử và trình diễn. Không phải mã chuyển khoản ngân hàng thật.'}
                   </div>
                   <div className="flex justify-between gap-2">
-                    <span className="text-court-muted">Số tài khoản:</span>
-                    <span className="font-mono font-bold text-charcoal tabular-nums">
-                      {payment?.bank_account_no || '0123456789'}
+                    <span className="text-court-muted">Chế độ cổng:</span>
+                    <span className="font-mono font-bold text-charcoal">
+                      {payment?.payment_mode || 'MOCK_DEMO'} ({payment?.provider || 'SIMULATED_GATEWAY'})
                     </span>
                   </div>
                   <div className="flex justify-between items-center gap-2 pt-1 border-t border-[#ECEBE2]">
-                    <span className="text-court-muted">Nội dung CK:</span>
+                    <span className="text-court-muted">Mã tham chiếu:</span>
                     <button
                       type="button"
                       onClick={handleCopyTransfer}
@@ -522,30 +635,67 @@ export const CheckoutPage: React.FC = () => {
             import.meta.env.VITE_ENABLE_DEMO_CONTROLS !== 'false' && (
           <section
             aria-label="Công cụ mô phỏng thanh toán phục vụ demo"
-            className="rounded-2xl border border-dashed border-amber-400 bg-amber-50/70 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+            className="rounded-2xl border border-dashed border-amber-400 bg-amber-50/70 p-4 sm:p-5 space-y-3"
           >
             <div className="flex items-start gap-2.5">
               <ShieldAlert className="w-5 h-5 text-amber-800 shrink-0 mt-0.5" aria-hidden="true" />
               <div>
                 <div className="text-xs font-bold uppercase tracking-wide text-amber-950">
-                  Chế độ Mô phỏng (Phục vụ Demo / Kiểm thử)
+                  Bảng điều khiển Giả lập Thanh toán (STAFF / ADMIN • Không phải tiền thật)
                 </div>
                 <p className="text-xs text-amber-900 mt-0.5">
-                  Đây là nút giả lập webhook ngân hàng cho môi trường phát triển/demo (yêu cầu quyền Nhân viên/Admin), không phải xác nhận giao dịch ngân hàng thật.
+                  Kích hoạt các kịch bản thanh toán giả lập để kiểm thử trạng thái PROCESSING, FAILED, thanh toán thiếu, thanh toán dư hoặc thành công.
                 </p>
               </div>
             </div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="md"
-              loading={simulating}
-              onClick={handleSimulatePayment}
-              className="shrink-0 border-amber-400 bg-white hover:bg-amber-100 text-amber-950"
-            >
-              <Zap className="w-4 h-4 text-amber-700" aria-hidden="true" />
-              {simulating ? 'Đang gửi webhook mẫu...' : 'Mô phỏng Webhook Thanh toán'}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                loading={simulating}
+                onClick={() => handleSimulatePayment('SUCCEEDED')}
+              >
+                <Zap className="w-4 h-4" aria-hidden="true" />
+                Mô phỏng Thành công
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                loading={simulating}
+                onClick={() => handleSimulatePayment('PROCESSING')}
+              >
+                Đang xử lý (PROCESSING)
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                loading={simulating}
+                onClick={() => handleSimulatePayment('FAILED')}
+              >
+                Thất bại (FAILED)
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                loading={simulating}
+                onClick={() => handleSimulatePayment('UNDERPAID')}
+              >
+                Thanh toán thiếu
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                loading={simulating}
+                onClick={() => handleSimulatePayment('OVERPAID')}
+              >
+                Thanh toán dư
+              </Button>
+            </div>
           </section>
           )}
         </div>

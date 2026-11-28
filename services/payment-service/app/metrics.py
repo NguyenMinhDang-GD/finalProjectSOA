@@ -21,6 +21,24 @@ PAYMENTS_CONFIRMED_TOTAL = Counter(
     ["provider"],
 )
 
+PAYMENTS_FAILED_TOTAL = Counter(
+    "pickleball_payments_failed_total",
+    "Total failed or underpaid payment attempts",
+    ["reason"],
+)
+
+PAYMENT_RECONCILIATION_CASES_TOTAL = Counter(
+    "pickleball_payment_reconciliation_cases_total",
+    "Total reconciliation cases created",
+    ["case_type"],
+)
+
+REFUNDS_TOTAL = Counter(
+    "pickleball_refunds_total",
+    "Total refund lifecycle transitions",
+    ["status", "policy_tier"],
+)
+
 OUTBOX_PENDING_GAUGE = Gauge(
     "pickleball_outbox_pending_events",
     "Current number of pending outbox events",

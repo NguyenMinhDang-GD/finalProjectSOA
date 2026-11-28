@@ -11,6 +11,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import aio_pika
+import httpx
 import qrcode
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
@@ -326,6 +327,40 @@ async def scan_and_checkin(
                     f"từ {ticket.start_hour:02d}:00 - {ticket.end_hour:02d}:00 (được vào sớm 30 phút)."
                 ),
             )
+
+    # Authoritative atomic admission claim in court-booking-service (serializes check-in vs cancellation)
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            claim_resp = await client.post(
+                f"{settings.booking_service_url}/api/bookings/internal/{ticket.booking_code}/claim-checkin",
+                headers={"X-Internal-Key": settings.internal_api_key},
+                json={"ticket_id": str(ticket.id), "staff_email": staff_email},
+            )
+        if claim_resp.status_code == 409:
+            detail_msg = str(claim_resp.json().get("detail") or "")
+            if "hủy" in detail_msg or "hết hạn" in detail_msg:
+                await db.execute(
+                    update(CheckinTicket)
+                    .where(CheckinTicket.id == ticket.id, CheckinTicket.status == "VALID")
+                    .values(status="REVOKED")
+                )
+                await db.commit()
+                QR_SCANS_TOTAL.labels(result="revoked").inc()
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail_msg)
+            QR_SCANS_TOTAL.labels(result="already_used").inc()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail_msg)
+        if claim_resp.status_code >= 400:
+            detail_msg = str(claim_resp.json().get("detail") or "Không thể xác nhận quyền check-in")
+            QR_SCANS_TOTAL.labels(result="not_paid").inc()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail_msg)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Could not claim check-in admission for %s: %s", ticket.booking_code, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Không thể xác minh và khóa quyền check-in với hệ thống đặt sân",
+        ) from exc
 
     # Atomic conditional update to guarantee single-use even under concurrent scans
     now_utc = datetime.now(timezone.utc)

@@ -8,6 +8,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import aio_pika
+import httpx
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -484,20 +485,162 @@ async def create_booking(
         raise
 
 
+async def check_ticket_checked_in(booking_code: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{settings.checkin_service_url}/api/checkin/internal/ticket/{booking_code.strip()}",
+                headers={"X-Internal-Key": settings.internal_api_key},
+            )
+        if resp.status_code == 200:
+            return str(resp.json().get("status") or "") == "CHECKED_IN"
+    except Exception as exc:
+        logger.warning("Could not check ticket status for %s: %s", booking_code, exc)
+    return False
+
+
+async def evaluate_cancellation_policy(order: BookingOrder) -> dict:
+    total_vnd = int(round(float(order.total_amount)))
+    now_vn = datetime.now(VN_TZ)
+    slot_start_vn = datetime.combine(order.play_date, dt_time(order.start_hour, 0), tzinfo=VN_TZ)
+    hours_until_play = round((slot_start_vn - now_vn).total_seconds() / 3600.0, 2)
+
+    if order.status in ("CANCELLED", "EXPIRED"):
+        return {
+            "booking_code": order.booking_code,
+            "status": order.status,
+            "eligible": False,
+            "is_checked_in": False,
+            "hours_until_play": hours_until_play,
+            "policy_tier": "NONE",
+            "refund_percent": 0,
+            "total_amount": total_vnd,
+            "estimated_refund_amount": 0,
+            "message": f"Đơn đã ở trạng thái {order.status}",
+        }
+
+    if order.status == "PENDING_PAYMENT":
+        return {
+            "booking_code": order.booking_code,
+            "status": order.status,
+            "eligible": True,
+            "is_checked_in": False,
+            "hours_until_play": hours_until_play,
+            "policy_tier": "UNPAID_RELEASE",
+            "refund_percent": 0,
+            "total_amount": total_vnd,
+            "estimated_refund_amount": 0,
+            "message": "Đơn chưa thanh toán — có thể hủy ngay không phát sinh hoàn tiền.",
+        }
+
+    is_checked_in = order.admission_status == "ADMITTED" or await check_ticket_checked_in(order.booking_code)
+    if is_checked_in:
+        return {
+            "booking_code": order.booking_code,
+            "status": order.status,
+            "eligible": False,
+            "is_checked_in": True,
+            "hours_until_play": hours_until_play,
+            "policy_tier": "CHECKED_IN_INELIGIBLE",
+            "refund_percent": 0,
+            "total_amount": total_vnd,
+            "estimated_refund_amount": 0,
+            "message": "Vé đã check-in vào sân, không đủ điều kiện hủy và hoàn tiền.",
+        }
+
+    if hours_until_play >= 24.0:
+        tier = "FULL_24H"
+        percent = 100
+        msg = "Hủy trước giờ chơi >= 24 giờ: đủ điều kiện hoàn 100%."
+    elif hours_until_play >= 2.0:
+        tier = "PARTIAL_2H_24H"
+        percent = 50
+        msg = "Hủy trước giờ chơi từ 2 giờ đến dưới 24 giờ: hoàn 50% theo chính sách."
+    else:
+        tier = "NON_REFUNDABLE_LT_2H"
+        percent = 0
+        msg = "Hủy sát giờ chơi (< 2 giờ): không hoàn tiền tự động (trừ trường hợp Admin ngoại lệ)."
+
+    estimated = int(round(total_vnd * percent / 100))
+    return {
+        "booking_code": order.booking_code,
+        "status": order.status,
+        "eligible": True,
+        "is_checked_in": False,
+        "hours_until_play": hours_until_play,
+        "policy_tier": tier,
+        "refund_percent": percent,
+        "total_amount": total_vnd,
+        "estimated_refund_amount": estimated,
+        "message": msg,
+    }
+
+
+async def trigger_internal_refund(
+    *,
+    booking_code: str,
+    requested_amount: int,
+    policy_tier: str,
+    policy_percent: int,
+    reason: str,
+    admin_override_reason: str | None = None,
+) -> None:
+    if requested_amount <= 0:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.post(
+                f"{settings.payment_service_url}/api/payments/internal/refunds",
+                headers={"X-Internal-Key": settings.internal_api_key},
+                json={
+                    "booking_code": booking_code,
+                    "requested_amount": requested_amount,
+                    "policy_tier": policy_tier,
+                    "policy_percent": policy_percent,
+                    "reason": reason,
+                    "admin_override_reason": admin_override_reason,
+                    "auto_approve": False,
+                },
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Sync internal refund returned %s for %s: %s",
+                    resp.status_code,
+                    booking_code,
+                    resp.text,
+                )
+    except Exception as exc:
+        logger.warning("Sync internal refund trigger failed for %s (RabbitMQ fallback active): %s", booking_code, exc)
+
+
 async def release_booking_slots(
     db: AsyncSession,
     redis_client: Redis,
     order: BookingOrder,
     new_status: str,
     reason: str | None = None,
+    refund_snapshot: dict | None = None,
 ) -> BookingResponse:
+    locked_order = await db.scalar(
+        select(BookingOrder).where(BookingOrder.id == order.id).with_for_update()
+    )
+    if not locked_order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy đơn đặt sân")
+    if new_status == "CANCELLED" and locked_order.admission_status == "ADMITTED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Vé đã check-in vào sân, không thể hủy đơn",
+        )
     allowed_from = ("PENDING_PAYMENT", "PAID") if new_status == "CANCELLED" else ("PENDING_PAYMENT",)
+    where_clauses = [BookingOrder.id == order.id, BookingOrder.status.in_(allowed_from)]
+    if new_status == "CANCELLED":
+        where_clauses.append(BookingOrder.admission_status == "NONE")
     res = await db.execute(
         update(BookingOrder)
-        .where(BookingOrder.id == order.id, BookingOrder.status.in_(allowed_from))
+        .where(*where_clauses)
         .values(
             status=new_status,
-            cancel_reason=reason if reason else order.cancel_reason,
+            cancel_reason=reason if reason else locked_order.cancel_reason,
         )
     )
     if (res.rowcount or 0) == 0:
@@ -511,16 +654,19 @@ async def release_booking_slots(
         .values(slot_status="RELEASED")
     )
     event_name = "booking.expired" if new_status == "EXPIRED" else "booking.cancelled"
+    event_payload = {
+        "booking_id": str(order.id),
+        "booking_code": order.booking_code,
+        "status": new_status,
+        "reason": reason,
+    }
+    if refund_snapshot:
+        event_payload.update(refund_snapshot)
     enqueue_outbox_event(
         db,
         event_type=event_name,
         aggregate_id=order.booking_code,
-        payload={
-            "booking_id": str(order.id),
-            "booking_code": order.booking_code,
-            "status": new_status,
-            "reason": reason,
-        },
+        payload=event_payload,
     )
     await db.commit()
     order = await _reload_booking(db, order.id)

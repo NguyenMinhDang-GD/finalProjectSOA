@@ -111,6 +111,12 @@ export interface PaymentTransaction {
   booking_id: string;
   booking_code: string;
   amount: number;
+  expected_amount: number;
+  received_amount: number;
+  refunded_amount: number;
+  currency: string;
+  payment_mode: string;
+  simulation_notice: string;
   transfer_content: string;
   qr_image_url: string;
   bank_bin: string;
@@ -118,12 +124,106 @@ export interface PaymentTransaction {
   bank_account_name: string;
   provider: string;
   provider_tx_id: string | null;
-  status: 'PENDING' | 'SUCCEEDED' | 'EXPIRED' | 'CANCELLED';
-  reconciliation_status?: 'NONE' | 'COMPENSATION_REQUIRED';
+  status: 'PENDING' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+  attempt_count: number;
+  failure_reason?: string | null;
+  last_attempt_at?: string | null;
+  reconciliation_status?: 'NONE' | 'OPEN' | 'IN_REVIEW' | 'RESOLVED' | 'COMPENSATION_REQUIRED';
   reconciliation_note?: string | null;
   expires_at: string;
   paid_at: string | null;
   created_at: string;
+}
+
+export interface PaymentAttempt {
+  id: string;
+  payment_id: string;
+  booking_code: string;
+  attempt_number: number;
+  provider: string;
+  provider_tx_id: string | null;
+  outcome: string;
+  expected_amount: number;
+  received_amount: number;
+  failure_reason: string | null;
+  initiated_by: string;
+  created_at: string;
+}
+
+export interface ReconciliationCase {
+  id: string;
+  payment_id: string | null;
+  booking_code: string;
+  case_type: string;
+  status: 'OPEN' | 'IN_REVIEW' | 'RESOLVED';
+  expected_amount: number;
+  received_amount: number;
+  discrepancy_amount: number;
+  provider_tx_id: string | null;
+  resolution_action: string | null;
+  resolution_note: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RefundTransaction {
+  id: string;
+  payment_id: string;
+  booking_id: string;
+  booking_code: string;
+  refund_code: string;
+  original_paid_amount: number;
+  requested_amount: number;
+  approved_amount: number;
+  refunded_amount: number;
+  policy_tier: string;
+  policy_percent: number;
+  status: 'REQUESTED' | 'APPROVED' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'REJECTED';
+  reason: string;
+  rejection_reason: string | null;
+  admin_override_reason: string | null;
+  failure_reason: string | null;
+  provider: string;
+  provider_refund_id: string | null;
+  retry_count: number;
+  requested_by: string;
+  approved_by: string | null;
+  processed_by: string | null;
+  created_at: string;
+  approved_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface FinancialAuditLog {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  booking_code: string;
+  action: string;
+  actor: string;
+  actor_role: string;
+  previous_state: string | null;
+  new_state: string | null;
+  amount_vnd: number;
+  reason: string | null;
+  metadata_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CancellationQuote {
+  booking_code: string;
+  status: string;
+  eligible: boolean;
+  is_checked_in: boolean;
+  hours_until_play: number;
+  policy_tier: string;
+  refund_percent: number;
+  total_amount: number;
+  estimated_refund_amount: number;
+  message: string;
 }
 
 export interface CheckinTicket {
