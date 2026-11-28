@@ -172,3 +172,61 @@ async def run_outbox_dispatcher(stop_event: asyncio.Event, poll_interval: float 
             await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
         except TimeoutError:
             continue
+
+
+async def list_failed_outbox_events() -> list[dict[str, Any]]:
+    """Return all terminal FAILED outbox events for operator inspection."""
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.status == "FAILED")
+                .order_by(OutboxEvent.created_at)
+            )
+        ).all()
+        return [
+            {
+                "event_id": str(r.id),
+                "event_type": r.event_type,
+                "aggregate_id": r.aggregate_id,
+                "retry_count": r.retry_count,
+                "last_error": r.last_error,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+
+
+async def requeue_failed_outbox_event(event_id: str | None = None) -> int:
+    """Controlled operator recovery: reset FAILED events to PENDING preserving original event_id."""
+    now_utc = datetime.now(timezone.utc)
+    async with AsyncSessionLocal() as db:
+        stmt = select(OutboxEvent).where(OutboxEvent.status == "FAILED")
+        if event_id:
+            stmt = stmt.where(OutboxEvent.id == uuid.UUID(event_id))
+        rows = (await db.scalars(stmt.with_for_update())).all()
+        for r in rows:
+            r.status = "PENDING"
+            r.retry_count = 0
+            r.next_retry_at = now_utc
+            r.last_error = None
+        await db.commit()
+        return len(rows)
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Outbox operator recovery CLI")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list-failed")
+    retry_p = sub.add_parser("retry-failed")
+    retry_p.add_argument("--event-id", default=None)
+    args = parser.parse_args()
+
+    if args.cmd == "list-failed":
+        print(json.dumps(asyncio.run(list_failed_outbox_events()), indent=2))
+    elif args.cmd == "retry-failed":
+        count = asyncio.run(requeue_failed_outbox_event(args.event_id))
+        print(json.dumps({"requeued": count}))

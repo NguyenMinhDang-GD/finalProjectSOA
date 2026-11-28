@@ -14,6 +14,7 @@ import aio_pika
 import qrcode
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,7 @@ from app.metrics import (
     EVENTS_RETRY_TOTAL,
     QR_SCANS_TOTAL,
 )
-from app.models import CheckinTicket
+from app.models import CancelledBooking, CheckinTicket
 from app.schemas import ScanQRResponse, TicketResponse
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,17 @@ async def issue_ticket_from_booking_confirmed(event_data: dict) -> None:
                 service=settings.service_name, event_type="booking.confirmed"
             ).inc()
             logger.info("Duplicate booking.confirmed skipped event_id=%s booking_code=%s", event_id, booking_code)
+            return
+
+        cancelled = await db.scalar(
+            select(CancelledBooking).where(CancelledBooking.booking_code == booking_code)
+        )
+        if cancelled:
+            await db.commit()
+            logger.info(
+                "Booking %s already cancelled before ticket issuance; skipping ticket creation",
+                booking_code,
+            )
             return
 
         existing = await db.scalar(
@@ -170,6 +182,11 @@ async def revoke_ticket_by_booking(event_data: dict) -> None:
             ).inc()
             return
 
+        await db.execute(
+            pg_insert(CancelledBooking)
+            .values(booking_code=booking_code, cancelled_at=datetime.now(timezone.utc))
+            .on_conflict_do_nothing(index_elements=["booking_code"])
+        )
         await db.execute(
             update(CheckinTicket)
             .where(CheckinTicket.booking_code == booking_code, CheckinTicket.status == "VALID")

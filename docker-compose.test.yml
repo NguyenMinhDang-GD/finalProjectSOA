@@ -180,6 +180,12 @@ services:
     networks:
       - pkb-test-net
 
+  web-frontend:
+    build:
+      context: ./frontend
+    networks:
+      - pkb-test-net
+
   api-gateway:
     image: nginx:1.27-alpine
     ports:
@@ -197,6 +203,8 @@ services:
         condition: service_healthy
       notification-service:
         condition: service_healthy
+      web-frontend:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1/gateway-health"]
       interval: 5s

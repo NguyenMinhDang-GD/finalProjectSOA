@@ -77,6 +77,13 @@ export const CheckoutPage: React.FC = () => {
         } catch {
           // Ticket issuance is asynchronous via RabbitMQ
         }
+      } else if (b.status === 'CANCELLED' || b.status === 'EXPIRED') {
+        try {
+          const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
+          setPayment(p);
+        } catch {
+          // No payment record exists for this cancelled/expired booking
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Không tải được thông tin đơn hàng';
@@ -196,9 +203,13 @@ export const CheckoutPage: React.FC = () => {
             <div className="flex items-start gap-3">
               <CheckCircle2 className="w-8 h-8 text-ball-lime shrink-0 mt-0.5" aria-hidden="true" />
               <div>
-                <h1 className="text-xl sm:text-2xl font-bold">Đặt sân &amp; Thanh toán thành công</h1>
+                <h1 className="text-xl sm:text-2xl font-bold">
+                  {ticket ? 'Đặt sân & Thanh toán thành công' : 'Đặt sân đã xác nhận — Đang chuẩn bị vé QR'}
+                </h1>
                 <p className="text-sm text-[#C7D6CD] mt-1">
-                  Vé QR đã được phát hành và gửi tới email <strong>{booking.customer_email}</strong>.
+                  {ticket
+                    ? <>Vé QR đã được phát hành và gửi tới email <strong>{booking.customer_email}</strong>.</>
+                    : 'Hệ thống đang phát hành vé QR điện tử, trang sẽ tự động cập nhật trong giây lát.'}
                 </p>
               </div>
             </div>
@@ -237,23 +248,54 @@ export const CheckoutPage: React.FC = () => {
           </div>
         </div>
       ) : booking.status === 'CANCELLED' || booking.status === 'EXPIRED' ? (
-        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center">
-          <XCircle className="w-12 h-12 text-[#B93829] mx-auto mb-3" aria-hidden="true" />
-          <div className="mb-2">
+        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center space-y-4">
+          <XCircle className="w-12 h-12 text-[#B93829] mx-auto" aria-hidden="true" />
+          <div>
             <StatusBadge status={booking.status} />
           </div>
           <h1 className="text-xl font-bold text-charcoal">
             Đơn đặt sân đã {booking.status === 'EXPIRED' ? 'hết hạn giữ chỗ' : 'bị hủy'}
           </h1>
-          <p className="text-sm text-court-muted mt-1.5 max-w-md mx-auto">
+          <p className="text-sm text-court-muted max-w-md mx-auto">
             {booking.cancel_reason || 'Các khung giờ trước đó đã được giải phóng để người chơi khác đặt.'}
           </p>
+          {(payment?.reconciliation_status === 'COMPENSATION_REQUIRED' ||
+            payment?.status === 'SUCCEEDED') && (
+            <div className="max-w-lg mx-auto text-left">
+              <AlertBanner
+                tone="warning"
+                title="Đã ghi nhận khoản thanh toán — Cần đối soát / hoàn tiền"
+              >
+                <div className="text-xs space-y-1">
+                  <p>
+                    Hệ thống đã lưu giữ bằng chứng thanh toán{' '}
+                    <strong className="font-mono">{payment.provider_tx_id || payment.id}</strong>{' '}
+                    ({formatVND(payment.amount)}), nhưng đơn đặt sân không thể xác nhận do đã{' '}
+                    {booking.status === 'EXPIRED' ? 'hết hạn' : 'bị hủy'}.
+                  </p>
+                  {payment.reconciliation_note && (
+                    <p className="text-amber-900">Ghi chú: {payment.reconciliation_note}</p>
+                  )}
+                </div>
+              </AlertBanner>
+            </div>
+          )}
           <Link
             to="/"
-            className="inline-block mt-6 bg-court hover:bg-court-soft text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+            className="inline-block bg-court hover:bg-court-soft text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
           >
             Đặt lịch mới
           </Link>
+        </div>
+      ) : payment?.status === 'SUCCEEDED' ? (
+        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center space-y-3">
+          <Clock className="w-10 h-10 text-court mx-auto animate-pulse" aria-hidden="true" />
+          <h1 className="text-xl font-bold text-charcoal">
+            Đã nhận thanh toán — Đang chờ xác nhận đặt sân
+          </h1>
+          <p className="text-sm text-court-muted max-w-md mx-auto">
+            Thanh toán cho đơn <strong className="font-mono text-charcoal">{booking.booking_code}</strong> đã được ghi nhận. Hệ thống đang hoàn tất xác nhận sân và sẽ tự động chuyển sang vé QR.
+          </p>
         </div>
       ) : (
         <div className="space-y-5">

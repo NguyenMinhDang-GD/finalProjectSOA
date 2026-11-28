@@ -118,6 +118,8 @@ export interface PaymentTransaction {
   provider: string;
   provider_tx_id: string | null;
   status: 'PENDING' | 'SUCCEEDED' | 'EXPIRED' | 'CANCELLED';
+  reconciliation_status?: 'NONE' | 'COMPENSATION_REQUIRED';
+  reconciliation_note?: string | null;
   expires_at: string;
   paid_at: string | null;
   created_at: string;
