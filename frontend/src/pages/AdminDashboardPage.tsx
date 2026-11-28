@@ -453,109 +453,158 @@ export const AdminDashboardPage: React.FC = () => {
     );
   }
 
+  const navGroups: Array<{
+    group: string;
+    items: Array<{ key: AdminTab; label: string; icon: React.ComponentType<{ className?: string }> }>;
+  }> = [
+    {
+      group: 'Cơ sở & Hạ tầng',
+      items: [
+        { key: 'courts', label: 'Chi nhánh & Sân', icon: Building2 },
+        { key: 'pricing', label: 'Bảng giá theo giờ', icon: Coins },
+      ],
+    },
+    {
+      group: 'Vận hành đặt sân',
+      items: [
+        { key: 'bookings', label: `Đơn đặt (${bookings.length})`, icon: BarChart3 },
+        { key: 'emails', label: `Email Log (${emails.length})`, icon: Mail },
+      ],
+    },
+    {
+      group: 'Hệ thống',
+      items: [{ key: 'users', label: `Tài khoản (${usersList.length})`, icon: Users }],
+    },
+  ];
+
+  const activeNavLabel =
+    navGroups.flatMap((g) => g.items).find((item) => item.key === tab)?.label || 'Quản trị';
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-      {/* Admin Header */}
-      <div className="bg-court text-white rounded-2xl p-5 sm:p-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="text-xs font-bold uppercase tracking-wider text-ball-lime">
-            Admin Operations Console
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2 mt-1">
-            <ShieldCheck className="w-6 h-6 text-ball-lime" aria-hidden="true" />
-            <span>Quản trị Hệ thống Sân &amp; Vận hành</span>
-          </h1>
-          <p className="text-xs text-[#C7D6CD] mt-1">
-            Quản lý chi nhánh, địa điểm, sân, bảng giá, đơn đặt sân, email và tài khoản
-          </p>
-        </div>
-        <Button type="button" variant="accent" size="md" onClick={loadAll} loading={loading}>
-          <RefreshCw className="w-4 h-4" aria-hidden="true" />
-          Làm mới dữ liệu
-        </Button>
-      </div>
-
-      {/* KPI Summary Cards */}
-      {stats && (
-        <section aria-label="Thống kê tổng quan" className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-white rounded-2xl border border-[#D4D6CD] p-4">
-            <div className="text-xs font-semibold text-court-muted flex items-center gap-1.5">
-              <BarChart3 className="w-4 h-4 text-court" aria-hidden="true" /> Tổng đơn đặt
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <div className="flex flex-col lg:flex-row gap-6 items-start">
+        {/* Responsive Operational Sidebar */}
+        <aside
+          aria-label="Danh mục quản trị"
+          className="w-full lg:w-64 shrink-0 bg-court text-white rounded-2xl border border-[#23483D] p-4 space-y-5 lg:sticky lg:top-20"
+        >
+          <div className="pb-3 border-b border-[#264C41]">
+            <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-ball-lime">
+              Admin Console
             </div>
-            <div className="text-2xl font-bold text-charcoal mt-1 tabular-nums">
-              {stats.total_bookings}
-            </div>
-            <div className="text-[11px] text-court-muted mt-1">
-              Sân đang hoạt động: <strong className="text-charcoal">{stats.active_courts}</strong>
+            <div className="font-display text-base font-extrabold mt-0.5 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-ball-lime shrink-0" aria-hidden="true" />
+              <span>Điều hành câu lạc bộ</span>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-[#D4D6CD] p-4">
-            <div className="text-xs font-semibold text-court-muted">Đơn đã thanh toán</div>
-            <div className="text-2xl font-bold text-[#14532D] mt-1 tabular-nums">
-              {stats.paid_bookings}
+          <nav className="space-y-4" role="tablist" aria-label="Danh mục quản trị">
+            {navGroups.map((grp) => (
+              <div key={grp.group} className="space-y-1.5">
+                <div className="px-2.5 text-[10px] font-bold uppercase tracking-[0.16em] text-[#9DB3A6]">
+                  {grp.group}
+                </div>
+                <div className="flex lg:flex-col gap-1.5 overflow-x-auto pb-1 lg:pb-0">
+                  {grp.items.map(({ key, label, icon: Icon }) => {
+                    const active = tab === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => setTab(key)}
+                        className={`inline-flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors text-left lg:w-full ${
+                          active
+                            ? 'bg-ball-lime text-court font-bold'
+                            : 'text-[#D6E1DA] hover:bg-court-soft hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </nav>
+        </aside>
+
+        {/* Main Operational Workspace */}
+        <div className="flex-1 min-w-0 w-full space-y-6">
+          {/* Topbar with Breadcrumb & Refresh */}
+          <header className="bg-white rounded-2xl border border-[#CFCFC4] px-5 py-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="text-xs text-court-muted font-medium">
+                Quản trị <span className="mx-1">/</span>{' '}
+                <span className="text-court font-semibold">{activeNavLabel}</span>
+              </div>
+              <h1 className="font-display text-xl sm:text-2xl font-extrabold text-charcoal mt-0.5">
+                {activeNavLabel}
+              </h1>
             </div>
-            <div className="text-[11px] text-court-muted mt-1">
-              Đã hủy / Hết hạn: <strong className="text-charcoal">{stats.cancelled_or_expired}</strong>
-            </div>
-          </div>
+            <Button type="button" variant="primary" size="md" onClick={loadAll} loading={loading}>
+              <RefreshCw className="w-4 h-4" aria-hidden="true" />
+              Làm mới dữ liệu
+            </Button>
+          </header>
 
-          <div className="bg-white rounded-2xl border border-[#D4D6CD] p-4">
-            <div className="text-xs font-semibold text-court-muted">Đang chờ thanh toán</div>
-            <div className="text-2xl font-bold text-amber-800 mt-1 tabular-nums">
-              {stats.pending_bookings}
-            </div>
-          </div>
+          {/* KPI Summary Cards */}
+          {stats && (
+            <section aria-label="Thống kê tổng quan" className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              <div className="bg-white rounded-2xl border border-[#CFCFC4] p-4">
+                <div className="text-xs font-semibold text-court-muted flex items-center gap-1.5">
+                  <BarChart3 className="w-4 h-4 text-court" aria-hidden="true" /> Tổng đơn đặt
+                </div>
+                <div className="font-mono text-2xl font-bold text-charcoal mt-1 tabular-nums">
+                  {stats.total_bookings}
+                </div>
+                <div className="text-[11px] text-court-muted mt-1">
+                  Sân hoạt động: <strong className="text-charcoal">{stats.active_courts}</strong>
+                </div>
+              </div>
 
-          <div className="bg-white rounded-2xl border border-[#D4D6CD] p-4">
-            <div className="text-xs font-semibold text-court-muted">Doanh thu ghi nhận</div>
-            <div className="text-2xl font-bold text-court mt-1 tabular-nums">
-              {formatVND(stats.total_revenue)}
-            </div>
-          </div>
-        </section>
-      )}
+              <div className="bg-white rounded-2xl border border-[#CFCFC4] p-4">
+                <div className="text-xs font-semibold text-court-muted">Đơn đã thanh toán</div>
+                <div className="font-mono text-2xl font-bold text-[#14532D] mt-1 tabular-nums">
+                  {stats.paid_bookings}
+                </div>
+                <div className="text-[11px] text-court-muted mt-1">
+                  Hủy / Hết hạn:{' '}
+                  <strong className="text-charcoal">{stats.cancelled_or_expired}</strong>
+                </div>
+              </div>
 
-      {partialErrors.length > 0 && (
-        <AlertBanner tone="warning" title="Một số dữ liệu chưa tải được" onRetry={loadAll}>
-          {partialErrors.join(' • ')}
-        </AlertBanner>
-      )}
+              <div className="bg-white rounded-2xl border border-[#CFCFC4] p-4">
+                <div className="text-xs font-semibold text-court-muted">Chờ thanh toán</div>
+                <div className="font-mono text-2xl font-bold text-amber-800 mt-1 tabular-nums">
+                  {stats.pending_bookings}
+                </div>
+              </div>
 
-      {message && <AlertBanner tone="success">{message}</AlertBanner>}
-      {errorMsg && <AlertBanner tone="error">{errorMsg}</AlertBanner>}
+              <div className="bg-white rounded-2xl border border-[#CFCFC4] p-4">
+                <div className="text-xs font-semibold text-court-muted">Doanh thu ghi nhận</div>
+                <div className="font-mono text-xl sm:text-2xl font-bold text-court mt-1 tabular-nums">
+                  {formatVND(stats.total_revenue)}
+                </div>
+              </div>
+            </section>
+          )}
 
-      {/* Tab Bar */}
-      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Danh mục quản trị">
-        {[
-          { key: 'courts', label: 'Chi nhánh & Sân', icon: Building2 },
-          { key: 'pricing', label: 'Bảng giá theo giờ', icon: Coins },
-          { key: 'bookings', label: `Đơn đặt (${bookings.length})`, icon: BarChart3 },
-          { key: 'emails', label: `Email Log (${emails.length})`, icon: Mail },
-          { key: 'users', label: `Tài khoản (${usersList.length})`, icon: Users },
-        ].map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            onClick={() => setTab(key as AdminTab)}
-            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border transition-colors ${
-              tab === key
-                ? 'bg-court text-white border-court'
-                : 'bg-white text-charcoal border-[#D4D6CD] hover:bg-[#ECEBE2]'
-            }`}
-          >
-            <Icon className="w-4 h-4" aria-hidden="true" />
-            <span>{label}</span>
-          </button>
-        ))}
-      </div>
+          {partialErrors.length > 0 && (
+            <AlertBanner tone="warning" title="Một số dữ liệu chưa tải được" onRetry={loadAll}>
+              {partialErrors.join(' • ')}
+            </AlertBanner>
+          )}
 
-      {loading && branches.length === 0 ? (
-        <LoadingSkeleton rows={4} />
-      ) : (
-        <>
+          {message && <AlertBanner tone="success">{message}</AlertBanner>}
+          {errorMsg && <AlertBanner tone="error">{errorMsg}</AlertBanner>}
+
+          {loading && branches.length === 0 ? (
+            <LoadingSkeleton rows={4} />
+          ) : (
+            <>
       {/* TAB 1: BRANCHES -> LOCATIONS -> COURTS */}
       {tab === 'courts' && (
         <div className="space-y-6">
@@ -1226,6 +1275,8 @@ export const AdminDashboardPage: React.FC = () => {
       )}
         </>
       )}
+        </div>
+      </div>
 
       {confirmState && (
         <ConfirmDialog

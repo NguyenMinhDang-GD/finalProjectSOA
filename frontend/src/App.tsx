@@ -1,9 +1,11 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { Footer } from './components/Footer';
 import { Navbar } from './components/Navbar';
 import { LoadingSkeleton } from './components/ui/FeedbackStates';
 import { AuthProvider } from './context/AuthContext';
 import { BookingPage } from './pages/BookingPage';
+import { LandingPage } from './pages/LandingPage';
 import { LoginPage } from './pages/LoginPage';
 import { LookupPage, MyBookingsPage } from './pages/LookupAndHistoryPage';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -34,7 +36,9 @@ export const App: React.FC = () => {
           <main className="flex-1">
             <Suspense fallback={<RouteFallback />}>
               <Routes>
-                <Route path="/" element={<BookingPage />} />
+                <Route path="/" element={<LandingPage />} />
+                <Route path="/book" element={<BookingPage />} />
+                <Route path="/booking" element={<BookingPage />} />
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />
                 <Route path="/checkout/:bookingCode" element={<CheckoutPage />} />
@@ -46,9 +50,7 @@ export const App: React.FC = () => {
               </Routes>
             </Suspense>
           </main>
-          <footer className="bg-white border-t border-[#E2E3DA] py-5 px-4 text-center text-xs text-court-muted">
-            Pickleball SOA Arena • Câu lạc bộ Pickleball &amp; Hệ thống đặt sân trực tuyến
-          </footer>
+          <Footer />
         </div>
       </BrowserRouter>
     </AuthProvider>

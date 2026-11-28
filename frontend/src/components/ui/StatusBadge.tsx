@@ -59,6 +59,11 @@ const STATUS_MAP: Record<
     classes: 'bg-red-50 text-red-900 border-red-200',
     icon: <AlertTriangle className="w-3 h-3" aria-hidden="true" />,
   },
+  COMPENSATION_REQUIRED: {
+    label: 'Cần đối soát',
+    classes: 'bg-amber-50 text-amber-950 border-amber-400',
+    icon: <AlertTriangle className="w-3 h-3" aria-hidden="true" />,
+  },
   EXPIRED: {
     label: 'Hết hạn',
     classes: 'bg-[#ECEBE2] text-[#4B524D] border-[#D4D6CD]',
