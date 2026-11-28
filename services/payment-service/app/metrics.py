@@ -1,6 +1,6 @@
 import time
 from fastapi import APIRouter, Request, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from app.config import settings
 
 HTTP_REQUESTS_TOTAL = Counter(
@@ -17,8 +17,50 @@ HTTP_REQUEST_DURATION = Histogram(
 
 PAYMENTS_CONFIRMED_TOTAL = Counter(
     "pickleball_payments_confirmed_total",
-    "Total payments confirmed",
+    "Total confirmed payments",
     ["provider"],
+)
+
+OUTBOX_PENDING_GAUGE = Gauge(
+    "pickleball_outbox_pending_events",
+    "Current number of pending outbox events",
+    ["service"],
+)
+
+OUTBOX_PUBLISHED_TOTAL = Counter(
+    "pickleball_outbox_published_total",
+    "Total outbox events published",
+    ["service", "event_type"],
+)
+
+OUTBOX_FAILED_TOTAL = Counter(
+    "pickleball_outbox_failed_total",
+    "Total outbox publication failures",
+    ["service", "event_type"],
+)
+
+EVENTS_RETRY_TOTAL = Counter(
+    "pickleball_consumer_retry_total",
+    "Total consumer retries",
+    ["service", "event_type"],
+)
+
+EVENTS_DUPLICATE_TOTAL = Counter(
+    "pickleball_consumer_duplicate_total",
+    "Total duplicate events skipped by inbox",
+    ["service", "event_type"],
+)
+
+EVENTS_DLQ_TOTAL = Counter(
+    "pickleball_consumer_dlq_total",
+    "Total events routed to DLQ",
+    ["service", "event_type"],
+)
+
+PAYMENT_COMPENSATION_REQUIRED_TOTAL = Counter(
+    "pickleball_payment_compensation_required_total",
+    "Total payments flagged as compensation required",
+    ["reason"],
 )
 
 metrics_router = APIRouter(tags=["Observability"])

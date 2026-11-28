@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import io
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import make_msgid
@@ -10,12 +12,19 @@ import aio_pika
 import aiosmtplib
 import qrcode
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.events.rabbitmq import DLX_NAME, rmq_client
-from app.metrics import EMAILS_SENT_TOTAL
-from app.models import NotificationLog
+from app.metrics import (
+    EMAILS_SENT_TOTAL,
+    EVENTS_DLQ_TOTAL,
+    EVENTS_DUPLICATE_TOTAL,
+    EVENTS_RETRY_TOTAL,
+)
+from app.models import InboxEvent, NotificationLog
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +124,41 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
     return msg
 
 
+def _resolve_event_id(ticket_event: dict) -> str:
+    if ticket_event.get("event_id"):
+        return str(ticket_event["event_id"])
+    raw = f"ticket.issued:{ticket_event.get('booking_code', '')}:{ticket_event.get('ticket_id', '')}"
+    return f"legacy:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"
+
+
 async def send_email_with_retry(ticket_event: dict) -> None:
-    booking_code = ticket_event["booking_code"]
-    recipient_email = ticket_event["customer_email"]
+    booking_code = str(ticket_event["booking_code"]).strip()
+    recipient_email = str(ticket_event["customer_email"]).strip()
+    event_id = _resolve_event_id(ticket_event)
+    correlation_id = str(ticket_event.get("correlation_id") or event_id)
 
     async with AsyncSessionLocal() as db:
+        inbox_exists = await db.scalar(
+            select(InboxEvent).where(
+                InboxEvent.consumer_name == "notification-service.ticket_issued",
+                InboxEvent.event_id == event_id,
+            )
+        )
         already_sent = await db.scalar(
             select(NotificationLog).where(
                 NotificationLog.booking_code == booking_code,
                 NotificationLog.status == "SENT",
             )
         )
-        if already_sent:
+        if inbox_exists or already_sent:
+            EVENTS_DUPLICATE_TOTAL.labels(
+                service=settings.service_name, event_type="ticket.issued"
+            ).inc()
+            logger.info(
+                "Duplicate ticket.issued skipped event_id=%s booking_code=%s",
+                event_id,
+                booking_code,
+            )
             return
 
     msg = _build_ticket_email(ticket_event)
@@ -145,24 +177,60 @@ async def send_email_with_retry(ticket_event: dict) -> None:
                 timeout=10,
             )
             async with AsyncSessionLocal() as db:
-                db.add(
-                    NotificationLog(
-                        booking_code=booking_code,
-                        recipient_email=recipient_email,
-                        subject=msg["Subject"],
-                        channel="EMAIL",
-                        status="SENT",
-                        retry_count=attempt - 1,
-                        sent_at=datetime.now(timezone.utc),
+                try:
+                    db.add(
+                        NotificationLog(
+                            booking_code=booking_code,
+                            recipient_email=recipient_email,
+                            subject=msg["Subject"],
+                            channel="EMAIL",
+                            status="SENT",
+                            retry_count=attempt - 1,
+                            sent_at=datetime.now(timezone.utc),
+                        )
                     )
-                )
-                await db.commit()
+                    await db.execute(
+                        pg_insert(InboxEvent)
+                        .values(
+                            id=uuid.uuid4(),
+                            consumer_name="notification-service.ticket_issued",
+                            event_id=event_id,
+                            event_type="ticket.issued",
+                            correlation_id=correlation_id,
+                            status="PROCESSED",
+                            processed_at=datetime.now(timezone.utc),
+                        )
+                        .on_conflict_do_nothing(index_elements=["consumer_name", "event_id"])
+                    )
+                    await db.commit()
+                except IntegrityError:
+                    await db.rollback()
+                    EVENTS_DUPLICATE_TOTAL.labels(
+                        service=settings.service_name, event_type="ticket.issued"
+                    ).inc()
+                    logger.info("Duplicate SENT notification prevented by DB constraint for %s", booking_code)
+                    return
             EMAILS_SENT_TOTAL.labels(status="sent").inc()
-            logger.info("Sent QR email for %s to %s", booking_code, recipient_email)
+            logger.info(
+                "Sent QR email for booking_code=%s event_id=%s correlation_id=%s",
+                booking_code,
+                event_id,
+                correlation_id,
+            )
             return
         except Exception as exc:
             last_error = str(exc)
-            logger.warning("SMTP attempt %s/%s failed for %s: %s", attempt, max_retries, booking_code, exc)
+            EVENTS_RETRY_TOTAL.labels(
+                service=settings.service_name, event_type="ticket.issued"
+            ).inc()
+            logger.warning(
+                "SMTP attempt %s/%s failed for booking_code=%s event_id=%s: %s",
+                attempt,
+                max_retries,
+                booking_code,
+                event_id,
+                exc,
+            )
             if attempt < max_retries:
                 await asyncio.sleep(1.5 * attempt)
 
@@ -184,6 +252,11 @@ async def send_email_with_retry(ticket_event: dict) -> None:
 
 
 async def start_ticket_consumer() -> None:
+    rmq_client.set_consumer_setup(_setup_ticket_consumer)
+    await _setup_ticket_consumer()
+
+
+async def _setup_ticket_consumer() -> None:
     if not rmq_client.channel or not rmq_client.exchange:
         return
     queue = await rmq_client.channel.declare_queue(
@@ -196,10 +269,27 @@ async def start_ticket_consumer() -> None:
     async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
         try:
             data = json.loads(message.body.decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Payload is not a JSON object")
+            for field in ("booking_code", "customer_email", "qr_payload", "court_name", "play_date", "start_hour", "end_hour"):
+                if not data.get(field) and data.get(field) != 0:
+                    raise ValueError(f"Missing required field: {field}")
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            logger.error("Permanent failure parsing ticket.issued, routing to DLQ: %s", exc)
+            EVENTS_DLQ_TOTAL.labels(
+                service=settings.service_name, event_type="ticket.issued"
+            ).inc()
+            await message.reject(requeue=False)
+            return
+
+        try:
             await send_email_with_retry(data)
             await message.ack()
         except Exception as exc:
-            logger.error("Routing message to DLQ due to error: %s", exc)
+            logger.error("Routing ticket.issued to DLQ due to error: %s", exc)
+            EVENTS_DLQ_TOTAL.labels(
+                service=settings.service_name, event_type="ticket.issued"
+            ).inc()
             await message.reject(requeue=False)
 
     await queue.consume(_on_message)

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -13,12 +14,19 @@ import aio_pika
 import qrcode
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.events.rabbitmq import rmq_client
-from app.metrics import QR_SCANS_TOTAL
+from app.events.outbox import claim_inbox_event, enqueue_outbox_event, resolve_event_id
+from app.events.rabbitmq import DLX_NAME, rmq_client
+from app.metrics import (
+    EVENTS_DLQ_TOTAL,
+    EVENTS_DUPLICATE_TOTAL,
+    EVENTS_RETRY_TOTAL,
+    QR_SCANS_TOTAL,
+)
 from app.models import CheckinTicket
 from app.schemas import ScanQRResponse, TicketResponse
 
@@ -45,11 +53,42 @@ def generate_qr_base64(qr_payload: str) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-async def issue_ticket_from_payment(event_data: dict) -> None:
-    booking_code = event_data["booking_code"]
+async def issue_ticket_from_booking_confirmed(event_data: dict) -> None:
+    booking_code = str(event_data["booking_code"]).strip()
+    event_id = resolve_event_id(
+        event_data,
+        f"booking.confirmed:{booking_code}:{event_data.get('booking_id', '')}",
+    )
+    correlation_id = str(event_data.get("correlation_id") or event_id)
+
     async with AsyncSessionLocal() as db:
-        existing = await db.scalar(select(CheckinTicket).where(CheckinTicket.booking_code == booking_code))
+        claimed = await claim_inbox_event(
+            db,
+            consumer_name="checkin-qr-service.booking_confirmed",
+            event_id=event_id,
+            event_type="booking.confirmed",
+            correlation_id=correlation_id,
+        )
+        if not claimed:
+            EVENTS_DUPLICATE_TOTAL.labels(
+                service=settings.service_name, event_type="booking.confirmed"
+            ).inc()
+            logger.info("Duplicate booking.confirmed skipped event_id=%s booking_code=%s", event_id, booking_code)
+            return
+
+        existing = await db.scalar(
+            select(CheckinTicket)
+            .where(CheckinTicket.booking_code == booking_code)
+            .with_for_update()
+        )
         if existing:
+            # Never recreate or reactivate an existing or REVOKED ticket
+            await db.commit()
+            logger.info(
+                "Ticket already exists (status=%s) for booking_code=%s; skipping issuance",
+                existing.status,
+                booking_code,
+            )
             return
 
         ticket_id = uuid.uuid4()
@@ -78,57 +117,124 @@ async def issue_ticket_from_payment(event_data: dict) -> None:
             status="VALID",
         )
         db.add(ticket)
-        await db.commit()
-        await db.refresh(ticket)
 
-    await rmq_client.publish(
-        "ticket.issued",
-        {
-            "event": "ticket.issued",
-            "ticket_id": str(ticket.id),
-            "booking_id": str(ticket.booking_id),
-            "booking_code": ticket.booking_code,
-            "customer_name": ticket.customer_name,
-            "customer_email": ticket.customer_email,
-            "customer_phone": ticket.customer_phone,
-            "court_name": ticket.court_name,
-            "branch_name": ticket.branch_name,
-            "location_name": ticket.location_name,
-            "location_address": ticket.location_address,
-            "play_date": ticket.play_date.isoformat(),
-            "start_hour": ticket.start_hour,
-            "end_hour": ticket.end_hour,
-            "total_amount": float(ticket.total_amount),
-            "qr_payload": ticket.qr_payload,
-        },
-    )
+        enqueue_outbox_event(
+            db,
+            event_type="ticket.issued",
+            aggregate_id=ticket.booking_code,
+            correlation_id=correlation_id,
+            causation_id=event_id,
+            payload={
+                "ticket_id": str(ticket.id),
+                "booking_id": str(ticket.booking_id),
+                "booking_code": ticket.booking_code,
+                "customer_name": ticket.customer_name,
+                "customer_email": ticket.customer_email,
+                "customer_phone": ticket.customer_phone,
+                "court_name": ticket.court_name,
+                "branch_name": ticket.branch_name,
+                "location_name": ticket.location_name,
+                "location_address": ticket.location_address,
+                "play_date": ticket.play_date.isoformat(),
+                "start_hour": ticket.start_hour,
+                "end_hour": ticket.end_hour,
+                "total_amount": float(ticket.total_amount),
+                "qr_payload": ticket.qr_payload,
+            },
+        )
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.info("Concurrent ticket creation prevented by DB constraint for %s", booking_code)
+            return
+        logger.info("Issued ticket %s and queued ticket.issued for %s", ticket.id, booking_code)
 
 
-async def revoke_ticket_by_booking(booking_code: str) -> None:
+async def revoke_ticket_by_booking(event_data: dict) -> None:
+    booking_code = str(event_data["booking_code"]).strip()
+    event_id = resolve_event_id(event_data, f"booking.cancelled:{booking_code}")
+    correlation_id = str(event_data.get("correlation_id") or event_id)
+
     async with AsyncSessionLocal() as db:
+        claimed = await claim_inbox_event(
+            db,
+            consumer_name="checkin-qr-service.booking_cancelled",
+            event_id=event_id,
+            event_type="booking.cancelled",
+            correlation_id=correlation_id,
+        )
+        if not claimed:
+            EVENTS_DUPLICATE_TOTAL.labels(
+                service=settings.service_name, event_type="booking.cancelled"
+            ).inc()
+            return
+
         await db.execute(
             update(CheckinTicket)
             .where(CheckinTicket.booking_code == booking_code, CheckinTicket.status == "VALID")
             .values(status="REVOKED")
         )
         await db.commit()
+        logger.info("Revoked ticket (if VALID) for cancelled booking_code=%s", booking_code)
 
 
 async def start_consumers() -> None:
+    rmq_client.set_consumer_setup(_setup_checkin_consumers)
+    await _setup_checkin_consumers()
+
+
+async def _setup_checkin_consumers() -> None:
     if not rmq_client.channel or not rmq_client.exchange:
         return
-    queue = await rmq_client.channel.declare_queue("checkin.events", durable=True)
-    await queue.bind(rmq_client.exchange, routing_key="payment.succeeded")
+    queue = await rmq_client.channel.declare_queue(
+        "checkin.events.v2",
+        durable=True,
+        arguments={"x-dead-letter-exchange": DLX_NAME},
+    )
+    await queue.bind(rmq_client.exchange, routing_key="booking.confirmed")
     await queue.bind(rmq_client.exchange, routing_key="booking.cancelled")
 
     async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-        async with message.process(requeue=False):
+        try:
             data = json.loads(message.body.decode("utf-8"))
-            event_name = data.get("event")
-            if event_name == "payment.succeeded":
-                await issue_ticket_from_payment(data)
-            elif event_name == "booking.cancelled" and data.get("booking_code"):
-                await revoke_ticket_by_booking(data["booking_code"])
+            if not isinstance(data, dict) or not data.get("event") or not data.get("booking_code"):
+                raise ValueError("Missing event or booking_code in checkin event")
+            event_name = str(data["event"])
+            if event_name == "booking.confirmed":
+                for field in ("booking_id", "customer_name", "customer_email", "court_name", "play_date", "start_hour", "end_hour"):
+                    if field not in data:
+                        raise ValueError(f"Missing required field {field} in booking.confirmed")
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            logger.error("Permanent failure parsing checkin event, routing to DLQ: %s", exc)
+            EVENTS_DLQ_TOTAL.labels(service=settings.service_name, event_type="unknown").inc()
+            await message.reject(requeue=False)
+            return
+
+        event_name = str(data["event"])
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                if event_name == "booking.confirmed":
+                    await issue_ticket_from_booking_confirmed(data)
+                elif event_name == "booking.cancelled":
+                    await revoke_ticket_by_booking(data)
+                await message.ack()
+                return
+            except Exception as exc:
+                EVENTS_RETRY_TOTAL.labels(service=settings.service_name, event_type=event_name).inc()
+                logger.warning(
+                    "Transient error processing %s (attempt %s/%s): %s",
+                    event_name,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+                else:
+                    EVENTS_DLQ_TOTAL.labels(service=settings.service_name, event_type=event_name).inc()
+                    await message.reject(requeue=False)
 
     await queue.consume(_on_message)
 

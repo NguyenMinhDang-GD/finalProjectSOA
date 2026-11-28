@@ -21,6 +21,7 @@ build/
 .DS_Store
 Thumbs.db
 
-# Local docs & test scripts (excluded from Git)
-tests/
-docs/
+# Local test caches & artifacts
+.pytest_cache/
+tests/**/*.log
+docs/**/scratch/

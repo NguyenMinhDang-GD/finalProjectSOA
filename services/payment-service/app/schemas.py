@@ -29,6 +29,8 @@ class PaymentResponse(BaseModel):
     provider: str
     provider_tx_id: str | None
     status: str
+    reconciliation_status: str = "NONE"
+    reconciliation_note: str | None = None
     expires_at: datetime
     paid_at: datetime | None
     created_at: datetime

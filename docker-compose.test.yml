@@ -1,0 +1,210 @@
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pkb_test_user
+      POSTGRES_PASSWORD: pkb_test_password
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./infra/postgres/init-multi-db.sql:/docker-entrypoint-initdb.d/init-multi-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pkb_test_user"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pkb-test-net
+
+  rabbitmq-test:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "15673:5672"
+      - "25672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    networks:
+      - pkb-test-net
+
+  mailpit-test:
+    image: axllent/mailpit:latest
+    ports:
+      - "11025:1025"
+      - "18025:8025"
+    networks:
+      - pkb-test-net
+
+  auth-service:
+    build:
+      context: ./services/auth-service
+    environment:
+      SERVICE_NAME: auth-service
+      DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/auth_db
+      JWT_SECRET: test-only-jwt-secret-p01
+      JWT_EXPIRE_MINUTES: 60
+    ports:
+      - "18001:8001"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  court-booking-service:
+    build:
+      context: ./services/court-booking-service
+    environment:
+      SERVICE_NAME: court-booking-service
+      DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/booking_db
+      REDIS_URL: redis://redis-test:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      JWT_SECRET: test-only-jwt-secret-p01
+      INTERNAL_API_KEY: test-only-internal-key-p01
+    ports:
+      - "18002:8002"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      rabbitmq-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+    environment:
+      SERVICE_NAME: payment-service
+      DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/payment_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      BOOKING_SERVICE_URL: http://court-booking-service:8002
+      INTERNAL_API_KEY: test-only-internal-key-p01
+      WEBHOOK_SECRET: test-only-webhook-secret-p01
+      VIETQR_BANK_BIN: "970422"
+      VIETQR_ACCOUNT_NO: "0000000000"
+      VIETQR_ACCOUNT_NAME: "TEST PICKLEBALL"
+      ENABLE_DEMO_WEBHOOK: "true"
+    ports:
+      - "18003:8003"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      rabbitmq-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  checkin-qr-service:
+    build:
+      context: ./services/checkin-qr-service
+    environment:
+      SERVICE_NAME: checkin-qr-service
+      DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/checkin_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      JWT_SECRET: test-only-jwt-secret-p01
+      QR_HMAC_SECRET: test-only-qr-hmac-secret-p01
+      ALLOW_DEMO_BYPASS_TIME: "true"
+    ports:
+      - "18004:8004"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      rabbitmq-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+    environment:
+      SERVICE_NAME: notification-service
+      DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/notification_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      JWT_SECRET: test-only-jwt-secret-p01
+      SMTP_HOST: mailpit-test
+      SMTP_PORT: 1025
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_USE_TLS: "false"
+      SMTP_FROM: test@pickleball-soa.local
+    ports:
+      - "18005:8005"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      rabbitmq-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    networks:
+      - pkb-test-net
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "18080:80"
+    volumes:
+      - ./infra/gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      court-booking-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      checkin-qr-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/gateway-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - pkb-test-net
+
+networks:
+  pkb-test-net:
+    driver: bridge

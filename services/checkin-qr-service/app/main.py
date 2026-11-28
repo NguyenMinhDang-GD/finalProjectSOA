@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,6 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine
+from app.events.outbox import run_outbox_dispatcher
 from app.events.rabbitmq import rmq_client
 from app.metrics import metrics_router, prometheus_middleware
 from app.routers.checkin import router as checkin_router
@@ -23,8 +25,13 @@ async def lifespan(app: FastAPI):
     await rmq_client.connect()
     await start_consumers()
 
+    stop_event = asyncio.Event()
+    outbox_task = asyncio.create_task(run_outbox_dispatcher(stop_event))
+
     yield
 
+    stop_event.set()
+    await outbox_task
     await rmq_client.close()
     await engine.dispose()
 

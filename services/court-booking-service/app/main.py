@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import AsyncSessionLocal, Base, engine
+from app.events.outbox import run_outbox_dispatcher
 from app.events.rabbitmq import rmq_client
 from app.metrics import metrics_router, prometheus_middleware
 from app.routers.bookings import router as bookings_router
@@ -48,11 +49,13 @@ async def lifespan(app: FastAPI):
 
     stop_event = asyncio.Event()
     worker_task = asyncio.create_task(run_expiration_worker(redis_client, stop_event))
+    outbox_task = asyncio.create_task(run_outbox_dispatcher(stop_event))
 
     yield
 
     stop_event.set()
     await worker_task
+    await outbox_task
     await rmq_client.close()
     await redis_client.aclose()
     await engine.dispose()

@@ -17,8 +17,26 @@ HTTP_REQUEST_DURATION = Histogram(
 
 EMAILS_SENT_TOTAL = Counter(
     "pickleball_emails_sent_total",
-    "Total QR ticket emails processed",
+    "Total ticket emails processed",
     ["status"],
+)
+
+EVENTS_RETRY_TOTAL = Counter(
+    "pickleball_consumer_retry_total",
+    "Total consumer retries",
+    ["service", "event_type"],
+)
+
+EVENTS_DUPLICATE_TOTAL = Counter(
+    "pickleball_consumer_duplicate_total",
+    "Total duplicate events skipped by inbox",
+    ["service", "event_type"],
+)
+
+EVENTS_DLQ_TOTAL = Counter(
+    "pickleball_consumer_dlq_total",
+    "Total events routed to DLQ",
+    ["service", "event_type"],
 )
 
 metrics_router = APIRouter(tags=["Observability"])

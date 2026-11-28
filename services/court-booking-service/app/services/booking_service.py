@@ -17,9 +17,26 @@ from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import AsyncSessionLocal
-from app.events.rabbitmq import rmq_client
-from app.metrics import BOOKINGS_CREATED_TOTAL, BOOKINGS_EXPIRED_TOTAL, BOOKINGS_PAID_TOTAL
-from app.models import BookingOrder, BookingSlot, Branch, Court, Location, PricingRule
+from app.events.outbox import claim_inbox_event, enqueue_outbox_event, resolve_event_id
+from app.events.rabbitmq import DLX_NAME, rmq_client
+from app.metrics import (
+    BOOKINGS_CREATED_TOTAL,
+    BOOKINGS_EXPIRED_TOTAL,
+    BOOKINGS_PAID_TOTAL,
+    BOOKING_COMPENSATION_REQUIRED_TOTAL,
+    EVENTS_DLQ_TOTAL,
+    EVENTS_DUPLICATE_TOTAL,
+    EVENTS_RETRY_TOTAL,
+)
+from app.models import (
+    BookingCompensation,
+    BookingOrder,
+    BookingSlot,
+    Branch,
+    Court,
+    Location,
+    PricingRule,
+)
 from app.schemas import (
     AdminStatsResponse,
     AvailabilityResponse,
@@ -423,6 +440,18 @@ async def release_booking_slots(
         .where(BookingSlot.booking_id == order.id)
         .values(slot_status="RELEASED")
     )
+    event_name = "booking.expired" if new_status == "EXPIRED" else "booking.cancelled"
+    enqueue_outbox_event(
+        db,
+        event_type=event_name,
+        aggregate_id=order.booking_code,
+        payload={
+            "booking_id": str(order.id),
+            "booking_code": order.booking_code,
+            "status": new_status,
+            "reason": reason,
+        },
+    )
     await db.commit()
     order = await _reload_booking(db, order.id)
 
@@ -430,39 +459,153 @@ async def release_booking_slots(
     if keys:
         await redis_client.delete(*keys)
 
-    event_name = "booking.expired" if new_status == "EXPIRED" else "booking.cancelled"
-    await rmq_client.publish(
-        event_name,
-        {
-            "event": event_name,
-            "booking_id": str(order.id),
-            "booking_code": order.booking_code,
-            "status": new_status,
-            "reason": reason,
-        },
-    )
     return BookingResponse.model_validate(order)
 
 
-async def confirm_booking_paid(booking_code: str, redis_client: Redis) -> None:
+async def _record_confirmation_failure(
+    db: AsyncSession,
+    booking_id: uuid.UUID | None,
+    booking_code: str,
+    event_data: dict,
+    reason: str,
+    correlation_id: str,
+    causation_id: str,
+) -> None:
+    payment_id = str(event_data.get("payment_id", "") or event_data.get("provider_tx_id", "unknown"))
+    existing_comp = await db.scalar(
+        select(BookingCompensation).where(
+            BookingCompensation.booking_code == booking_code,
+            BookingCompensation.payment_id == payment_id,
+        )
+    )
+    if not existing_comp:
+        db.add(
+            BookingCompensation(
+                booking_id=booking_id,
+                booking_code=booking_code,
+                payment_id=payment_id,
+                provider_tx_id=event_data.get("provider_tx_id"),
+                amount=Decimal(str(event_data.get("total_amount", 0))),
+                reason=reason,
+                status="COMPENSATION_REQUIRED",
+            )
+        )
+    enqueue_outbox_event(
+        db,
+        event_type="booking.confirmation_failed",
+        aggregate_id=booking_code,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        payload={
+            "booking_id": str(booking_id) if booking_id else event_data.get("booking_id"),
+            "booking_code": booking_code,
+            "payment_id": payment_id,
+            "provider_tx_id": event_data.get("provider_tx_id"),
+            "total_amount": event_data.get("total_amount", 0),
+            "reason": reason,
+        },
+    )
+    BOOKING_COMPENSATION_REQUIRED_TOTAL.labels(reason=reason.lower()[:40]).inc()
+    logger.warning(
+        "Booking confirmation failed, compensation required: booking_code=%s reason=%s correlation_id=%s",
+        booking_code,
+        reason,
+        correlation_id,
+    )
+
+
+async def confirm_booking_paid(event_data: dict, redis_client: Redis) -> None:
+    booking_code = str(event_data["booking_code"]).strip()
+    event_id = resolve_event_id(
+        event_data,
+        f"payment.succeeded:{booking_code}:{event_data.get('payment_id', '')}:{event_data.get('provider_tx_id', '')}",
+    )
+    correlation_id = str(event_data.get("correlation_id") or event_id)
+
     async with AsyncSessionLocal() as db:
+        claimed = await claim_inbox_event(
+            db,
+            consumer_name="court-booking-service.payment_succeeded",
+            event_id=event_id,
+            event_type="payment.succeeded",
+            correlation_id=correlation_id,
+        )
+        if not claimed:
+            EVENTS_DUPLICATE_TOTAL.labels(
+                service=settings.service_name, event_type="payment.succeeded"
+            ).inc()
+            logger.info("Duplicate payment.succeeded skipped event_id=%s booking_code=%s", event_id, booking_code)
+            return
+
         order = await db.scalar(
             select(BookingOrder)
             .options(selectinload(BookingOrder.slots))
             .where(BookingOrder.booking_code == booking_code)
+            .with_for_update()
         )
         if not order:
-            logger.warning("payment.succeeded received for unknown booking_code=%s", booking_code)
-            return
-        if order.status == "PAID":
+            await _record_confirmation_failure(
+                db, None, booking_code, event_data, "BOOKING_NOT_FOUND", correlation_id, event_id
+            )
+            await db.commit()
             return
 
-        order.status = "PAID"
-        order.paid_at = datetime.now(timezone.utc)
-        await db.execute(
-            update(BookingSlot)
-            .where(BookingSlot.booking_id == order.id)
-            .values(slot_status="BOOKED")
+        if order.status == "PAID":
+            await db.commit()
+            logger.info("Booking %s already PAID; skipping duplicate confirmation", booking_code)
+            return
+
+        if order.status != "PENDING_PAYMENT":
+            await _record_confirmation_failure(
+                db, order.id, booking_code, event_data, f"BOOKING_STATUS_{order.status}", correlation_id, event_id
+            )
+            await db.commit()
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        try:
+            async with db.begin_nested():
+                order.status = "PAID"
+                order.paid_at = now_utc
+                await db.execute(
+                    update(BookingSlot)
+                    .where(BookingSlot.booking_id == order.id)
+                    .values(slot_status="BOOKED")
+                )
+                await db.flush()
+        except IntegrityError:
+            order.status = "EXPIRED"
+            await _record_confirmation_failure(
+                db, order.id, booking_code, event_data, "SLOT_CONFLICT", correlation_id, event_id
+            )
+            await db.commit()
+            return
+
+        enqueue_outbox_event(
+            db,
+            event_type="booking.confirmed",
+            aggregate_id=order.booking_code,
+            correlation_id=correlation_id,
+            causation_id=event_id,
+            payload={
+                "booking_id": str(order.id),
+                "booking_code": order.booking_code,
+                "payment_id": event_data.get("payment_id"),
+                "provider": event_data.get("provider"),
+                "provider_tx_id": event_data.get("provider_tx_id"),
+                "paid_at": now_utc.isoformat(),
+                "customer_name": order.customer_name,
+                "customer_phone": order.customer_phone,
+                "customer_email": order.customer_email,
+                "court_name": order.court_name_snapshot,
+                "branch_name": order.branch_name_snapshot,
+                "location_name": order.location_name_snapshot,
+                "location_address": order.location_address_snapshot,
+                "play_date": order.play_date.isoformat(),
+                "start_hour": order.start_hour,
+                "end_hour": order.end_hour,
+                "total_amount": float(order.total_amount),
+            },
         )
         await db.commit()
 
@@ -471,21 +614,66 @@ async def confirm_booking_paid(booking_code: str, redis_client: Redis) -> None:
             await redis_client.delete(*keys)
 
         BOOKINGS_PAID_TOTAL.inc()
-        logger.info("Booking %s transitioned to PAID", booking_code)
+        logger.info("Booking %s transitioned to PAID and queued booking.confirmed", booking_code)
 
 
 async def start_payment_consumer(redis_client: Redis) -> None:
+    rmq_client.set_consumer_setup(lambda: _setup_payment_consumer(redis_client))
+    await _setup_payment_consumer(redis_client)
+
+
+async def _setup_payment_consumer(redis_client: Redis) -> None:
     if not rmq_client.channel or not rmq_client.exchange:
         return
-    queue = await rmq_client.channel.declare_queue("booking.payment_events", durable=True)
+    queue = await rmq_client.channel.declare_queue(
+        "booking.payment_events.v2",
+        durable=True,
+        arguments={"x-dead-letter-exchange": DLX_NAME},
+    )
     await queue.bind(rmq_client.exchange, routing_key="payment.succeeded")
 
     async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-        async with message.process(requeue=False):
+        try:
             data = json.loads(message.body.decode("utf-8"))
-            booking_code = data.get("booking_code")
-            if booking_code:
-                await confirm_booking_paid(booking_code, redis_client)
+            if not isinstance(data, dict) or not data.get("booking_code"):
+                raise ValueError("Missing booking_code in payment.succeeded event")
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            logger.error("Permanent failure parsing payment.succeeded, routing to DLQ: %s", exc)
+            EVENTS_DLQ_TOTAL.labels(
+                service=settings.service_name, event_type="payment.succeeded"
+            ).inc()
+            await message.reject(requeue=False)
+            return
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await confirm_booking_paid(data, redis_client)
+                await message.ack()
+                return
+            except Exception as exc:
+                EVENTS_RETRY_TOTAL.labels(
+                    service=settings.service_name, event_type="payment.succeeded"
+                ).inc()
+                logger.warning(
+                    "Transient error processing payment.succeeded (attempt %s/%s) event_id=%s: %s",
+                    attempt,
+                    max_attempts,
+                    data.get("event_id"),
+                    exc,
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+                else:
+                    EVENTS_DLQ_TOTAL.labels(
+                        service=settings.service_name, event_type="payment.succeeded"
+                    ).inc()
+                    logger.error(
+                        "Routing payment.succeeded to DLQ after %s attempts event_id=%s",
+                        max_attempts,
+                        data.get("event_id"),
+                    )
+                    await message.reject(requeue=False)
 
     await queue.consume(_on_message)
 
