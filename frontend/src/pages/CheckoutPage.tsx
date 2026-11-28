@@ -6,9 +6,11 @@ import { Button } from '../components/ui/Button';
 import { AlertBanner, ConfirmDialog, LoadingSkeleton } from '../components/ui/FeedbackStates';
 import { QrTicketCard } from '../components/ui/QrTicketCard';
 import { StatusBadge } from '../components/ui/StatusBadge';
+import { useAuth } from '../context/AuthContext';
 import { BookingOrder, CheckinTicket, PaymentTransaction } from '../types';
 
 export const CheckoutPage: React.FC = () => {
+  const { user } = useAuth();
   const { bookingCode } = useParams<{ bookingCode: string }>();
   const [booking, setBooking] = useState<BookingOrder | null>(null);
   const [payment, setPayment] = useState<PaymentTransaction | null>(null);
@@ -44,21 +46,33 @@ export const CheckoutPage: React.FC = () => {
     if (!bookingCode || inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const b = await apiRequest<BookingOrder>(`/api/bookings/lookup/${bookingCode}`);
+      const b = await apiRequest<BookingOrder>(
+        `/api/bookings/lookup/${bookingCode}`,
+        {},
+        bookingCode
+      );
       setBooking(b);
       setPollWarning('');
 
       if (b.status === 'PENDING_PAYMENT') {
         if (!paymentInitializedRef.current) {
-          const p = await apiRequest<PaymentTransaction>('/api/payments/create', {
-            method: 'POST',
-            body: JSON.stringify({ booking_code: bookingCode }),
-          });
+          const p = await apiRequest<PaymentTransaction>(
+            '/api/payments/create',
+            {
+              method: 'POST',
+              body: JSON.stringify({ booking_code: bookingCode }),
+            },
+            bookingCode
+          );
           paymentInitializedRef.current = true;
           setPayment(p);
         } else {
           try {
-            const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
+            const p = await apiRequest<PaymentTransaction>(
+              `/api/payments/booking/${bookingCode}`,
+              {},
+              bookingCode
+            );
             setPayment(p);
           } catch {
             // Keep existing payment state if transient GET fails
@@ -66,20 +80,32 @@ export const CheckoutPage: React.FC = () => {
         }
       } else if (b.status === 'PAID') {
         try {
-          const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
+          const p = await apiRequest<PaymentTransaction>(
+            `/api/payments/booking/${bookingCode}`,
+            {},
+            bookingCode
+          );
           setPayment(p);
         } catch {
           // Non-critical if payment lookup lags
         }
         try {
-          const t = await apiRequest<CheckinTicket>(`/api/checkin/ticket/${bookingCode}`);
+          const t = await apiRequest<CheckinTicket>(
+            `/api/checkin/ticket/${bookingCode}`,
+            {},
+            bookingCode
+          );
           setTicket(t);
         } catch {
           // Ticket issuance is asynchronous via RabbitMQ
         }
       } else if (b.status === 'CANCELLED' || b.status === 'EXPIRED') {
         try {
-          const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
+          const p = await apiRequest<PaymentTransaction>(
+            `/api/payments/booking/${bookingCode}`,
+            {},
+            bookingCode
+          );
           setPayment(p);
         } catch {
           // No payment record exists for this cancelled/expired booking
@@ -156,7 +182,7 @@ export const CheckoutPage: React.FC = () => {
     setCancelling(true);
     setError('');
     try {
-      await apiRequest(`/api/bookings/${bookingCode}/cancel`, { method: 'POST' });
+      await apiRequest(`/api/bookings/${bookingCode}/cancel`, { method: 'POST' }, bookingCode);
       setConfirmCancelOpen(false);
       await loadData();
     } catch (err) {
@@ -168,11 +194,15 @@ export const CheckoutPage: React.FC = () => {
 
   if (error && !booking) {
     return (
-      <div className="max-w-xl mx-auto px-4 py-12">
+      <div className="max-w-xl mx-auto px-4 py-12 space-y-4">
         <AlertBanner tone="error" title="Không tải được đơn đặt sân" onRetry={loadData}>
           {error}
         </AlertBanner>
-        <div className="mt-4 text-center">
+        <div className="bg-white rounded-xl border border-[#CFCFC4] p-4 text-xs text-court-muted leading-relaxed">
+          Nếu bạn đặt sân với tư cách khách vãng lai, vui lòng mở lại trang từ trình duyệt đã tạo đơn hoặc liên hệ nhân viên/quản trị viên tại sân kèm mã đơn{' '}
+          <strong className="font-mono text-charcoal">{bookingCode}</strong> để được hỗ trợ tra cứu.
+        </div>
+        <div className="text-center">
           <Link to="/book" className="text-sm font-bold text-court hover:underline">
             ← Quay lại trang đặt sân
           </Link>
@@ -487,7 +517,9 @@ export const CheckoutPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Clearly separated Demo/Dev Simulation Panel */}
+          {/* Clearly separated Demo/Dev Simulation Panel (STAFF/ADMIN only, disabled when VITE_ENABLE_DEMO_CONTROLS=false) */}
+          {(user?.role === 'STAFF' || user?.role === 'ADMIN') &&
+            import.meta.env.VITE_ENABLE_DEMO_CONTROLS !== 'false' && (
           <section
             aria-label="Công cụ mô phỏng thanh toán phục vụ demo"
             className="rounded-2xl border border-dashed border-amber-400 bg-amber-50/70 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
@@ -499,7 +531,7 @@ export const CheckoutPage: React.FC = () => {
                   Chế độ Mô phỏng (Phục vụ Demo / Kiểm thử)
                 </div>
                 <p className="text-xs text-amber-900 mt-0.5">
-                  Đây là nút giả lập webhook ngân hàng cho môi trường phát triển, không phải xác nhận giao dịch ngân hàng thật.
+                  Đây là nút giả lập webhook ngân hàng cho môi trường phát triển/demo (yêu cầu quyền Nhân viên/Admin), không phải xác nhận giao dịch ngân hàng thật.
                 </p>
               </div>
             </div>
@@ -515,6 +547,7 @@ export const CheckoutPage: React.FC = () => {
               {simulating ? 'Đang gửi webhook mẫu...' : 'Mô phỏng Webhook Thanh toán'}
             </Button>
           </section>
+          )}
         </div>
       )}
 

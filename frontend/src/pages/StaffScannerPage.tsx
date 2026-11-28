@@ -152,6 +152,7 @@ export const StaffScannerPage: React.FC = () => {
             </span>
           </div>
 
+          {import.meta.env.VITE_ENABLE_DEMO_CONTROLS !== 'false' && (
           <label className="inline-flex items-center gap-2 text-xs font-semibold bg-court-deep text-white px-3.5 py-2.5 rounded-xl border border-[#2D584B] cursor-pointer select-none">
             <input
               type="checkbox"
@@ -161,6 +162,7 @@ export const StaffScannerPage: React.FC = () => {
             />
             <span>Chế độ Demo: Bỏ qua khung giờ</span>
           </label>
+          )}
         </div>
       </header>
 

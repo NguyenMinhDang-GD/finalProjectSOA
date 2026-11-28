@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import html
 import io
 import json
 import logging
@@ -58,10 +59,19 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
     qr_cid = make_msgid(domain="pickleball-soa.vn")
     qr_cid_clean = qr_cid[1:-1]
 
+    safe_customer_name = html.escape(str(customer_name), quote=True)
+    safe_branch_name = html.escape(str(branch_name), quote=True)
+    safe_location_name = html.escape(str(location_name), quote=True)
+    safe_location_address = html.escape(str(location_address), quote=True)
+    safe_court_name = html.escape(str(court_name), quote=True)
+    safe_booking_code = html.escape(str(booking_code), quote=True)
+    safe_play_date = html.escape(str(play_date), quote=True)
+    safe_qr_payload = html.escape(str(qr_payload), quote=True)
+
     address_line_txt = f"- Địa chỉ: {location_address}\n" if location_address else ""
     address_row_html = (
         f'<tr><td style="padding: 8px 0; color: #6b7280;">Địa chỉ sân:</td>'
-        f'<td style="padding: 8px 0; font-weight: bold;">{location_address}</td></tr>'
+        f'<td style="padding: 8px 0; font-weight: bold;">{safe_location_address}</td></tr>'
         if location_address
         else ""
     )
@@ -87,25 +97,25 @@ def _build_ticket_email(ticket_event: dict) -> EmailMessage:
         <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #d1fae5;">
           <div style="background: #065f46; color: #ffffff; padding: 20px 24px;">
             <h2 style="margin: 0; font-size: 20px;">XÁC NHẬN ĐẶT SÂN PICKLEBALL</h2>
-            <p style="margin: 6px 0 0 0; font-size: 13px; color: #a7f3d0;">{branch_name} • {location_name}</p>
+            <p style="margin: 6px 0 0 0; font-size: 13px; color: #a7f3d0;">{safe_branch_name} • {safe_location_name}</p>
           </div>
           <div style="padding: 24px;">
-            <p>Xin chào <strong>{customer_name}</strong>,</p>
+            <p>Xin chào <strong>{safe_customer_name}</strong>,</p>
             <p>Đơn đặt sân của bạn đã được thanh toán thành công. Dưới đây là thông tin vé điện tử và mã QR check-in tại sân:</p>
             <table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px;">
-              <tr><td style="padding: 8px 0; color: #6b7280; width: 36%;">Mã đơn:</td><td style="padding: 8px 0; font-weight: bold;">{booking_code}</td></tr>
-              <tr><td style="padding: 8px 0; color: #6b7280;">Chi nhánh:</td><td style="padding: 8px 0; font-weight: bold; color: #065f46;">{branch_name}</td></tr>
-              <tr><td style="padding: 8px 0; color: #6b7280;">Địa điểm:</td><td style="padding: 8px 0; font-weight: bold;">{location_name}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280; width: 36%;">Mã đơn:</td><td style="padding: 8px 0; font-weight: bold;">{safe_booking_code}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Chi nhánh:</td><td style="padding: 8px 0; font-weight: bold; color: #065f46;">{safe_branch_name}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Địa điểm:</td><td style="padding: 8px 0; font-weight: bold;">{safe_location_name}</td></tr>
               {address_row_html}
-              <tr><td style="padding: 8px 0; color: #6b7280;">Sân thi đấu:</td><td style="padding: 8px 0; font-weight: bold;">{court_name}</td></tr>
-              <tr><td style="padding: 8px 0; color: #6b7280;">Ngày chơi:</td><td style="padding: 8px 0; font-weight: bold;">{play_date}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Sân thi đấu:</td><td style="padding: 8px 0; font-weight: bold;">{safe_court_name}</td></tr>
+              <tr><td style="padding: 8px 0; color: #6b7280;">Ngày chơi:</td><td style="padding: 8px 0; font-weight: bold;">{safe_play_date}</td></tr>
               <tr><td style="padding: 8px 0; color: #6b7280;">Khung giờ:</td><td style="padding: 8px 0; font-weight: bold;">{start_hour:02d}:00 - {end_hour:02d}:00</td></tr>
               <tr><td style="padding: 8px 0; color: #6b7280;">Tổng thanh toán:</td><td style="padding: 8px 0; font-weight: bold; color: #059669;">{total_amount:,.0f} VNĐ</td></tr>
             </table>
             <div style="text-align: center; background: #f9fafb; padding: 20px; border-radius: 10px; border: 1px dashed #10b981;">
               <p style="margin: 0 0 12px 0; font-weight: bold; color: #065f46;">MÃ QR CHECK-IN VÀO SÂN</p>
               <img src="cid:{qr_cid_clean}" alt="QR Check-in" style="width: 220px; height: 220px;" />
-              <p style="margin: 10px 0 0 0; font-size: 11px; color: #6b7280; word-break: break-all;">{qr_payload}</p>
+              <p style="margin: 10px 0 0 0; font-size: 11px; color: #6b7280; word-break: break-all;">{safe_qr_payload}</p>
             </div>
             <p style="font-size: 12px; color: #6b7280; margin-top: 16px;">
               Lưu ý: Mã QR chỉ có giá trị sử dụng 01 lần duy nhất và cho phép check-in sớm tối đa 30 phút trước giờ chơi.

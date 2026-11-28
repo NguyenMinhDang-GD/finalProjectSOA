@@ -9,11 +9,14 @@ from app.schemas import (
     RegisterRequest,
     UserResponse,
 )
+from app.config import settings
 from app.security import create_access_token, hash_password, verify_password
 from app.metrics import AUTH_EVENTS_TOTAL
 
 
 async def seed_default_users(db: AsyncSession) -> None:
+    if settings.app_env.lower() == "production":
+        return
     defaults = [
         ("admin@pickleball.vn", "Admin@123", "Quản trị viên Sân", "0901000001", "ADMIN"),
         ("staff@pickleball.vn", "Staff@123", "Nhân viên Quét vé", "0901000002", "STAFF"),

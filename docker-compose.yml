@@ -68,6 +68,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/auth_db
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
     ports:
       - "8001:8001"
     depends_on:
@@ -150,6 +151,8 @@ services:
       SERVICE_NAME: checkin-qr-service
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pickleball}:${POSTGRES_PASSWORD:-pickleball_secret}@postgres:5432/checkin_db
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      BOOKING_SERVICE_URL: http://court-booking-service:8002
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
       QR_HMAC_SECRET: ${QR_HMAC_SECRET}
       ALLOW_DEMO_BYPASS_TIME: ${ALLOW_DEMO_BYPASS_TIME:-true}

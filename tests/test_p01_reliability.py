@@ -163,20 +163,21 @@ def run_tests() -> int:
     # T01: Happy Path
     b1 = create_booking(0)
     code1 = b1["booking_code"]
+    gt1 = {"X-Guest-Token": b1["guest_access_token"]}
     amt1 = float(b1["total_amount"])
-    st, _ = http_json("POST", "/api/payments/create", {"booking_code": code1})
+    st, _ = http_json("POST", "/api/payments/create", {"booking_code": code1}, headers=gt1)
     assert st == 201
     tx1 = f"TX-T01-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code1, amt1, tx1)
     assert st == 200
 
     wait_until(
-        lambda: http_json("GET", f"/api/bookings/lookup/{code1}")[1].get("status") == "PAID",
+        lambda: http_json("GET", f"/api/bookings/lookup/{code1}", headers=gt1)[1].get("status") == "PAID",
         msg="T01 booking PAID",
     )
     ticket1 = wait_until(
-        lambda: http_json("GET", f"/api/checkin/ticket/{code1}")[0] == 200
-        and http_json("GET", f"/api/checkin/ticket/{code1}")[1],
+        lambda: http_json("GET", f"/api/checkin/ticket/{code1}", headers=gt1)[0] == 200
+        and http_json("GET", f"/api/checkin/ticket/{code1}", headers=gt1)[1],
         msg="T01 ticket issued",
     )
     assert ticket1["status"] == "VALID"
@@ -225,8 +226,9 @@ def run_tests() -> int:
     # T05: Payment Success Without Booking Confirmation
     b5 = create_booking(2)
     code5 = b5["booking_code"]
+    gt5 = {"X-Guest-Token": b5["guest_access_token"]}
     amt5 = float(b5["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code5})
+    http_json("POST", "/api/payments/create", {"booking_code": code5}, headers=gt5)
     psql("booking_db", f"UPDATE booking_orders SET status='CANCELLED' WHERE booking_code='{code5}'")
     tx5 = f"TX-T05-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code5, amt5, tx5)
@@ -243,8 +245,9 @@ def run_tests() -> int:
     # T06: RabbitMQ Unavailable During Payment Persistence
     b6 = create_booking(3)
     code6 = b6["booking_code"]
+    gt6 = {"X-Guest-Token": b6["guest_access_token"]}
     amt6 = float(b6["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code6})
+    http_json("POST", "/api/payments/create", {"booking_code": code6}, headers=gt6)
     compose_cmd("stop", "rabbitmq-test")
     tx6 = f"TX-T06-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code6, amt6, tx6)
@@ -253,7 +256,7 @@ def run_tests() -> int:
     assert int(psql("payment_db", f"SELECT COUNT(*) FROM outbox_events WHERE aggregate_id='{code6}' AND status='PENDING'")) == 1
     compose_cmd("start", "rabbitmq-test")
     wait_until(
-        lambda: http_json("GET", f"/api/checkin/ticket/{code6}")[0] == 200,
+        lambda: http_json("GET", f"/api/checkin/ticket/{code6}", headers=gt6)[0] == 200,
         timeout=75.0,
         msg="T06 recovery after RMQ restore",
     )
@@ -263,8 +266,9 @@ def run_tests() -> int:
     # T07: Outbox Dispatcher Restart
     b7 = create_booking(4)
     code7 = b7["booking_code"]
+    gt7 = {"X-Guest-Token": b7["guest_access_token"]}
     amt7 = float(b7["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code7})
+    http_json("POST", "/api/payments/create", {"booking_code": code7}, headers=gt7)
     compose_cmd("stop", "rabbitmq-test")
     tx7 = f"TX-T07-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code7, amt7, tx7)
@@ -273,7 +277,7 @@ def run_tests() -> int:
     compose_cmd("restart", "payment-service")
     compose_cmd("start", "rabbitmq-test")
     wait_until(
-        lambda: http_json("GET", f"/api/checkin/ticket/{code7}")[0] == 200,
+        lambda: http_json("GET", f"/api/checkin/ticket/{code7}", headers=gt7)[0] == 200,
         timeout=75.0,
         msg="T07 recovery after payment-service restart",
     )
@@ -291,23 +295,25 @@ def run_tests() -> int:
     # T09: Transient Consumer Failure
     b9 = create_booking(5)
     code9 = b9["booking_code"]
+    gt9 = {"X-Guest-Token": b9["guest_access_token"]}
     amt9 = float(b9["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code9})
+    http_json("POST", "/api/payments/create", {"booking_code": code9}, headers=gt9)
     tx9 = f"TX-T09-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code9, amt9, tx9)
     assert st == 200
     # Wait for payment.succeeded to be in flight or test transient DB pause on booking
     b9_2 = create_booking(6)
     code9_2 = b9_2["booking_code"]
+    gt9_2 = {"X-Guest-Token": b9_2["guest_access_token"]}
     amt9_2 = float(b9_2["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code9_2})
+    http_json("POST", "/api/payments/create", {"booking_code": code9_2}, headers=gt9_2)
     compose_cmd("pause", "postgres-test")
     time.sleep(1.0)
     compose_cmd("unpause", "postgres-test")
     tx9_2 = f"TX-T09B-{uuid.uuid4().hex[:8]}"
     st, _ = send_webhook(code9_2, amt9_2, tx9_2)
     assert st == 200
-    wait_until(lambda: http_json("GET", f"/api/checkin/ticket/{code9_2}")[0] == 200, timeout=30.0, msg="T09 recovery")
+    wait_until(lambda: http_json("GET", f"/api/checkin/ticket/{code9_2}", headers=gt9_2)[0] == 200, timeout=30.0, msg="T09 recovery")
     record("T09", "PASS", f"Transient DB pause recovered cleanly for {code9_2}")
 
     # T10: Permanent Consumer Failure -> DLQ
@@ -326,8 +332,9 @@ def run_tests() -> int:
     # T11: Expired or Cancelled Booking With Received Payment
     b11 = create_booking(7)
     code11 = b11["booking_code"]
+    gt11 = {"X-Guest-Token": b11["guest_access_token"]}
     amt11 = float(b11["total_amount"])
-    http_json("POST", "/api/payments/create", {"booking_code": code11})
+    http_json("POST", "/api/payments/create", {"booking_code": code11}, headers=gt11)
     psql("booking_db", f"UPDATE booking_orders SET status='EXPIRED' WHERE booking_code='{code11}'")
     psql("payment_db", f"UPDATE payment_transactions SET status='EXPIRED' WHERE booking_code='{code11}'")
     tx11 = f"TX-T11-{uuid.uuid4().hex[:8]}"
@@ -349,7 +356,7 @@ def run_tests() -> int:
     )
     assert st == 200
     wait_until(
-        lambda: http_json("GET", f"/api/checkin/ticket/{code1}")[1].get("status") == "REVOKED",
+        lambda: http_json("GET", f"/api/checkin/ticket/{code1}", headers=gt1)[1].get("status") == "REVOKED",
         msg="T12 ticket REVOKED",
     )
     confirmed1 = psql("booking_db", f"SELECT payload::text FROM outbox_events WHERE aggregate_id='{code1}' AND event_type='booking.confirmed' LIMIT 1")
@@ -367,7 +374,7 @@ def run_tests() -> int:
     record("T12", "PASS", f"Revoked ticket for {code1} blocked scan and ignored delayed confirmation")
 
     # T13: Atomic Single-Use Check-in Regression
-    st_t3, t3 = http_json("GET", f"/api/checkin/ticket/{code3}")
+    st_t3, t3 = http_json("GET", f"/api/checkin/ticket/{code3}", headers={"X-Guest-Token": b3["guest_access_token"]})
     assert st_t3 == 200 and isinstance(t3, dict)
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
         futs = [

@@ -152,7 +152,8 @@ export const LoginPage: React.FC = () => {
             </Link>
           </p>
 
-          {/* Secondary collapsible presentation/demo autofill */}
+          {/* Secondary collapsible presentation/demo autofill (hidden when VITE_ENABLE_DEMO_CONTROLS=false) */}
+          {import.meta.env.VITE_ENABLE_DEMO_CONTROLS !== 'false' && (
           <div className="pt-4 border-t border-[#DCDCD2]">
             <button
               type="button"
@@ -201,6 +202,7 @@ export const LoginPage: React.FC = () => {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     </div>

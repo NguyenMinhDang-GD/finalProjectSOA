@@ -11,7 +11,14 @@ import {
   MapPin,
   RefreshCw,
 } from 'lucide-react';
-import { apiRequest, formatDateVN, formatHourRange, formatVND, todayVN } from '../api/client';
+import {
+  apiRequest,
+  formatDateVN,
+  formatHourRange,
+  formatVND,
+  setGuestToken,
+  todayVN,
+} from '../api/client';
 import courtIndoorImg from '../assets/images/court-indoor.webp';
 import courtOutdoorImg from '../assets/images/court-outdoor.webp';
 import { Button } from '../components/ui/Button';
@@ -206,6 +213,9 @@ export const BookingPage: React.FC = () => {
           customer_email: customerEmail.trim(),
         }),
       });
+      if (order.guest_access_token) {
+        setGuestToken(order.booking_code, order.guest_access_token);
+      }
       navigate(`/checkout/${order.booking_code}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Đặt sân thất bại');

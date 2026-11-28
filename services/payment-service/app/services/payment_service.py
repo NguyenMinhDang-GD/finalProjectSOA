@@ -40,7 +40,7 @@ def build_vietqr_url(amount: float, transfer_content: str) -> str:
 
 
 def verify_webhook_signature(booking_code: str, amount: float, provider_tx_id: str, signature: str | None) -> bool:
-    if not signature:
+    if not settings.webhook_secret or not signature:
         return False
     canonical = f"{booking_code}:{int(round(amount))}:{provider_tx_id}"
     expected = hmac.new(

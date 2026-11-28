@@ -1,8 +1,27 @@
 const TOKEN_KEY = 'pkb_access_token';
 const USER_KEY = 'pkb_user';
+const GUEST_TOKEN_PREFIX = 'pkb_guest_token_';
 
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
+}
+
+export function getGuestToken(bookingCode: string): string | null {
+  if (!bookingCode) return null;
+  try {
+    return sessionStorage.getItem(`${GUEST_TOKEN_PREFIX}${bookingCode.trim()}`);
+  } catch {
+    return null;
+  }
+}
+
+export function setGuestToken(bookingCode: string, token: string): void {
+  if (!bookingCode || !token) return;
+  try {
+    sessionStorage.setItem(`${GUEST_TOKEN_PREFIX}${bookingCode.trim()}`, token);
+  } catch {
+    // Ignore storage quota errors
+  }
 }
 
 export function setAuthStorage(token: string, user: unknown): void {
@@ -42,14 +61,22 @@ function extractApiErrorMessage(data: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
-export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiRequest<T>(
+  path: string,
+  options: RequestInit = {},
+  guestBookingCode?: string
+): Promise<T> {
   const token = getStoredToken();
+  const guestToken = guestBookingCode ? getGuestToken(guestBookingCode) : null;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+  }
+  if (guestToken) {
+    headers['X-Guest-Token'] = guestToken;
   }
 
   const res = await fetch(path, { ...options, headers });

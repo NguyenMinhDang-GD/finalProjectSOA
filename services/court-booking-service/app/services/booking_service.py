@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import aio_pika
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,14 +21,18 @@ from app.database import AsyncSessionLocal
 from app.events.outbox import claim_inbox_event, enqueue_outbox_event, resolve_event_id
 from app.events.rabbitmq import DLX_NAME, rmq_client
 from app.metrics import (
+    BOOKING_COMPENSATION_REQUIRED_TOTAL,
+    BOOKING_CONFLICTS_TOTAL,
     BOOKINGS_CREATED_TOTAL,
     BOOKINGS_EXPIRED_TOTAL,
     BOOKINGS_PAID_TOTAL,
-    BOOKING_COMPENSATION_REQUIRED_TOTAL,
     EVENTS_DLQ_TOTAL,
     EVENTS_DUPLICATE_TOTAL,
     EVENTS_RETRY_TOTAL,
+    REDIS_LOCK_FAILURES_TOTAL,
+    REDIS_LOCK_MISMATCH_TOTAL,
 )
+from app.security import hash_guest_token
 from app.models import (
     BookingCompensation,
     BookingOrder,
@@ -122,13 +127,43 @@ async def _reload_booking(db: AsyncSession, booking_id: uuid.UUID) -> BookingOrd
     return order
 
 
+RELEASE_LOCK_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+else
+  return 0
+end
+"""
+
+
 def _slot_lock_key(court_id: uuid.UUID, play_date: date, start_hour: int) -> str:
     return f"lock:court:{court_id}:{play_date.isoformat()}:{start_hour}"
 
 
 def _generate_booking_code(play_date: date) -> str:
-    suffix = secrets.token_hex(2).upper()
+    suffix = secrets.token_hex(5).upper()
     return f"PKB-{play_date.strftime('%Y%m%d')}-{suffix}"
+
+
+async def release_owned_locks(
+    redis_client: Redis | None,
+    keys: list[str],
+    lock_token: str | None,
+) -> int:
+    if not redis_client or not keys or not lock_token:
+        return 0
+    released = 0
+    for key in keys:
+        try:
+            res = await redis_client.eval(RELEASE_LOCK_LUA, 1, key, lock_token)
+            if int(res or 0) == 1:
+                released += 1
+            else:
+                REDIS_LOCK_MISMATCH_TOTAL.inc()
+        except RedisError as exc:
+            REDIS_LOCK_FAILURES_TOTAL.inc()
+            logger.warning("Redis lock release failed for key=%s: %s", key, exc)
+    return released
 
 
 async def seed_courts_and_pricing(db: AsyncSession) -> None:
@@ -350,22 +385,39 @@ async def create_booking(
     is_weekend = payload.play_date.weekday() >= 5
     rules = (await db.scalars(select(PricingRule))).all()
 
-    booking_code = _generate_booking_code(payload.play_date)
+    lock_token = secrets.token_urlsafe(24)
     acquired_keys: list[str] = []
+    raw_guest_token = secrets.token_urlsafe(32) if user_id is None else None
+    guest_token_hash = hash_guest_token(raw_guest_token) if raw_guest_token else None
+    booking_code = _generate_booking_code(payload.play_date)
 
     try:
         for h in payload.hours:
             key = _slot_lock_key(court.id, payload.play_date, h)
-            ok = await redis_client.set(key, booking_code, nx=True, ex=settings.lock_ttl_seconds)
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Khung giờ {h:02d}:00 - {h + 1:02d}:00 đã có người khác giữ chỗ hoặc đặt rồi",
-                )
-            acquired_keys.append(key)
+            try:
+                ok = await redis_client.set(key, lock_token, nx=True, ex=settings.lock_ttl_seconds)
+                if not ok:
+                    BOOKING_CONFLICTS_TOTAL.labels(source="redis").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Khung giờ {h:02d}:00 - {h + 1:02d}:00 đã có người khác giữ chỗ hoặc đặt rồi",
+                    )
+                acquired_keys.append(key)
+            except RedisError as exc:
+                # Fail-safe DB-backed fallback: PostgreSQL uq_active_court_slot enforces slot uniqueness
+                REDIS_LOCK_FAILURES_TOTAL.inc()
+                logger.warning("Redis unavailable during lock acquire for key=%s, relying on DB uniqueness: %s", key, exc)
 
         now_utc = datetime.now(timezone.utc)
         expires_at = now_utc + timedelta(seconds=settings.lock_ttl_seconds)
+        play_end_vn = datetime.combine(
+            payload.play_date, dt_time(payload.hours[-1] + 1, 0), tzinfo=VN_TZ
+        )
+        guest_token_expires_at = (
+            max(expires_at, play_end_vn.astimezone(timezone.utc) + timedelta(hours=24))
+            if guest_token_hash
+            else None
+        )
         total_amount = Decimal("0")
         slot_models: list[BookingSlot] = []
 
@@ -400,6 +452,9 @@ async def create_booking(
             end_hour=payload.hours[-1] + 1,
             total_amount=total_amount,
             status="PENDING_PAYMENT",
+            guest_token_hash=guest_token_hash,
+            guest_token_expires_at=guest_token_expires_at,
+            lock_token=lock_token,
             expires_at=expires_at,
             slots=slot_models,
         )
@@ -408,6 +463,7 @@ async def create_booking(
             await db.commit()
         except IntegrityError as exc:
             await db.rollback()
+            BOOKING_CONFLICTS_TOTAL.labels(source="postgres").inc()
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Một hoặc nhiều khung giờ đã được đặt bởi giao dịch khác",
@@ -418,10 +474,13 @@ async def create_booking(
             court_type=court.court_type,
             customer_type="registered" if user_id else "guest",
         ).inc()
-        return BookingResponse.model_validate(order)
+        resp = BookingResponse.model_validate(order)
+        if raw_guest_token is not None:
+            resp.guest_access_token = raw_guest_token
+        return resp
     except Exception:
         if acquired_keys:
-            await redis_client.delete(*acquired_keys)
+            await release_owned_locks(redis_client, acquired_keys, lock_token)
         raise
 
 
@@ -432,9 +491,20 @@ async def release_booking_slots(
     new_status: str,
     reason: str | None = None,
 ) -> BookingResponse:
-    order.status = new_status
-    if reason:
-        order.cancel_reason = reason
+    allowed_from = ("PENDING_PAYMENT", "PAID") if new_status == "CANCELLED" else ("PENDING_PAYMENT",)
+    res = await db.execute(
+        update(BookingOrder)
+        .where(BookingOrder.id == order.id, BookingOrder.status.in_(allowed_from))
+        .values(
+            status=new_status,
+            cancel_reason=reason if reason else order.cancel_reason,
+        )
+    )
+    if (res.rowcount or 0) == 0:
+        await db.rollback()
+        reloaded = await _reload_booking(db, order.id)
+        return BookingResponse.model_validate(reloaded)
+
     await db.execute(
         update(BookingSlot)
         .where(BookingSlot.booking_id == order.id)
@@ -457,7 +527,7 @@ async def release_booking_slots(
 
     keys = [_slot_lock_key(order.court_id, order.play_date, s.start_hour) for s in order.slots]
     if keys:
-        await redis_client.delete(*keys)
+        await release_owned_locks(redis_client, keys, order.lock_token)
 
     return BookingResponse.model_validate(order)
 
@@ -611,7 +681,7 @@ async def confirm_booking_paid(event_data: dict, redis_client: Redis) -> None:
 
         keys = [_slot_lock_key(order.court_id, order.play_date, s.start_hour) for s in order.slots]
         if keys:
-            await redis_client.delete(*keys)
+            await release_owned_locks(redis_client, keys, order.lock_token)
 
         BOOKINGS_PAID_TOTAL.inc()
         logger.info("Booking %s transitioned to PAID and queued booking.confirmed", booking_code)
@@ -678,26 +748,40 @@ async def _setup_payment_consumer(redis_client: Redis) -> None:
     await queue.consume(_on_message)
 
 
+async def expire_due_bookings_batch(
+    db: AsyncSession,
+    redis_client: Redis,
+    batch_size: int = 50,
+) -> int:
+    now_utc = datetime.now(timezone.utc)
+    expired_orders = (
+        await db.scalars(
+            select(BookingOrder)
+            .options(selectinload(BookingOrder.slots))
+            .where(
+                BookingOrder.status == "PENDING_PAYMENT",
+                BookingOrder.expires_at < now_utc,
+            )
+            .order_by(BookingOrder.expires_at.asc())
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+    ).all()
+    count = 0
+    for order in expired_orders:
+        await release_booking_slots(
+            db, redis_client, order, "EXPIRED", "Hết thời gian giữ chỗ 15 phút"
+        )
+        BOOKINGS_EXPIRED_TOTAL.inc()
+        count += 1
+    return count
+
+
 async def run_expiration_worker(redis_client: Redis, stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         try:
             async with AsyncSessionLocal() as db:
-                now_utc = datetime.now(timezone.utc)
-                expired_orders = (
-                    await db.scalars(
-                        select(BookingOrder)
-                        .options(selectinload(BookingOrder.slots))
-                        .where(
-                            BookingOrder.status == "PENDING_PAYMENT",
-                            BookingOrder.expires_at < now_utc,
-                        )
-                    )
-                ).all()
-                for order in expired_orders:
-                    await release_booking_slots(
-                        db, redis_client, order, "EXPIRED", "Hết thời gian giữ chỗ 15 phút"
-                    )
-                    BOOKINGS_EXPIRED_TOTAL.inc()
+                await expire_due_bookings_batch(db, redis_client, batch_size=50)
         except Exception as exc:
             logger.exception("Expiration worker error: %s", exc)
 

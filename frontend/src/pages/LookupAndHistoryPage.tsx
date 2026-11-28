@@ -21,7 +21,11 @@ export const LookupPage: React.FC = () => {
     setError('');
     setBooking(null);
     try {
-      const data = await apiRequest<BookingOrder>(`/api/bookings/lookup/${code.trim()}`);
+      const data = await apiRequest<BookingOrder>(
+        `/api/bookings/lookup/${code.trim()}`,
+        {},
+        code.trim()
+      );
       setBooking(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không tìm thấy đơn đặt sân');

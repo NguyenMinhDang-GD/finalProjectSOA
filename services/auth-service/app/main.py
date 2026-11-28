@@ -10,6 +10,7 @@ from app.services.auth_service import seed_default_users
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_production_settings()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
@@ -18,20 +19,21 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+is_prod = settings.app_env.lower() == "production"
 app = FastAPI(
     title="Pickleball Auth Service",
     version="1.0.0",
-    docs_url="/api/auth/docs",
-    openapi_url="/api/auth/openapi.json",
+    docs_url=None if is_prod else "/api/auth/docs",
+    openapi_url=None if is_prod else "/api/auth/openapi.json",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
 )
 app.middleware("http")(prometheus_middleware)
 

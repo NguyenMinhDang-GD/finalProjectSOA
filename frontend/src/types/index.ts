@@ -103,6 +103,7 @@ export interface BookingOrder {
   paid_at: string | null;
   created_at: string;
   slots: BookingSlot[];
+  guest_access_token?: string | null;
 }
 
 export interface PaymentTransaction {

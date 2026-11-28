@@ -73,6 +73,28 @@ BOOKING_COMPENSATION_REQUIRED_TOTAL = Counter(
     ["reason"],
 )
 
+BOOKING_CONFLICTS_TOTAL = Counter(
+    "pickleball_booking_conflicts_total",
+    "Total booking slot conflicts (Redis or DB)",
+    ["source"],
+)
+
+REDIS_LOCK_FAILURES_TOTAL = Counter(
+    "pickleball_redis_lock_failures_total",
+    "Total Redis lock acquisition/release errors falling back to DB",
+)
+
+REDIS_LOCK_MISMATCH_TOTAL = Counter(
+    "pickleball_redis_lock_ownership_mismatch_total",
+    "Total lock release skipped due to ownership token mismatch",
+)
+
+AUTH_REJECTED_TOTAL = Counter(
+    "pickleball_auth_rejected_total",
+    "Total unauthorized or forbidden resource access attempts",
+    ["service", "endpoint"],
+)
+
 metrics_router = APIRouter(tags=["Observability"])
 
 

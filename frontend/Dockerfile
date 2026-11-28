@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install
 COPY . .
+ARG VITE_ENABLE_DEMO_CONTROLS=true
+ENV VITE_ENABLE_DEMO_CONTROLS=$VITE_ENABLE_DEMO_CONTROLS
 RUN npm run build
 
 FROM nginx:1.27-alpine

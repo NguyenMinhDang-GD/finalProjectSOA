@@ -15,6 +15,7 @@ from app.services.payment_service import start_booking_lifecycle_consumer
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_production_settings()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         if engine.dialect.name == "postgresql":
@@ -45,20 +46,21 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+is_prod = settings.app_env.lower() == "production"
 app = FastAPI(
     title="Pickleball Payment Service",
     version="1.0.0",
-    docs_url="/api/payments/docs",
-    openapi_url="/api/payments/openapi.json",
+    docs_url=None if is_prod else "/api/payments/docs",
+    openapi_url=None if is_prod else "/api/payments/openapi.json",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Guest-Token", "X-Webhook-Signature", "X-Request-Id"],
 )
 app.middleware("http")(prometheus_middleware)
 

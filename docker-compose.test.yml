@@ -57,6 +57,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/auth_db
       JWT_SECRET: test-only-jwt-secret-p01
       JWT_EXPIRE_MINUTES: 60
+      INTERNAL_API_KEY: test-only-internal-key-p01
     ports:
       - "18001:8001"
     depends_on:
@@ -105,6 +106,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/payment_db
       RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
       BOOKING_SERVICE_URL: http://court-booking-service:8002
+      JWT_SECRET: test-only-jwt-secret-p01
       INTERNAL_API_KEY: test-only-internal-key-p01
       WEBHOOK_SECRET: test-only-webhook-secret-p01
       VIETQR_BANK_BIN: "970422"
@@ -133,6 +135,8 @@ services:
       SERVICE_NAME: checkin-qr-service
       DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/checkin_db
       RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      BOOKING_SERVICE_URL: http://court-booking-service:8002
+      INTERNAL_API_KEY: test-only-internal-key-p01
       JWT_SECRET: test-only-jwt-secret-p01
       QR_HMAC_SECRET: test-only-qr-hmac-secret-p01
       ALLOW_DEMO_BYPASS_TIME: "true"
@@ -158,6 +162,8 @@ services:
       SERVICE_NAME: notification-service
       DATABASE_URL: postgresql+asyncpg://pkb_test_user:pkb_test_password@postgres-test:5432/notification_db
       RABBITMQ_URL: amqp://guest:guest@rabbitmq-test:5672/
+      BOOKING_SERVICE_URL: http://court-booking-service:8002
+      INTERNAL_API_KEY: test-only-internal-key-p01
       JWT_SECRET: test-only-jwt-secret-p01
       SMTP_HOST: mailpit-test
       SMTP_PORT: 1025

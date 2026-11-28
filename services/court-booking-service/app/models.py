@@ -93,6 +93,10 @@ class BookingOrder(Base):
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="PENDING_PAYMENT", index=True
     )  # PENDING_PAYMENT | PAID | CANCELLED | EXPIRED
+    guest_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    guest_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    guest_token_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lock_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

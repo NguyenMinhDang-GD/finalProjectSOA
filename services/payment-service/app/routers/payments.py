@@ -7,6 +7,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import PaymentTransaction
 from app.schemas import CreatePaymentRequest, PaymentResponse, PaymentWebhookRequest
+from app.security import authorize_booking_access, get_optional_claims, is_valid_internal_key
 from app.services.payment_service import (
     confirm_payment_idempotent,
     create_or_get_payment,
@@ -17,12 +18,24 @@ router = APIRouter(prefix="/api/payments", tags=["Payments & VietQR"])
 
 
 @router.post("/create", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
-async def create_payment(payload: CreatePaymentRequest, db: AsyncSession = Depends(get_db)):
+async def create_payment(
+    payload: CreatePaymentRequest,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    await authorize_booking_access(payload.booking_code, claims, x_guest_token)
     return await create_or_get_payment(db, payload.booking_code)
 
 
 @router.get("/booking/{booking_code}", response_model=PaymentResponse)
-async def get_payment_by_booking(booking_code: str, db: AsyncSession = Depends(get_db)):
+async def get_payment_by_booking(
+    booking_code: str,
+    claims: dict | None = Depends(get_optional_claims),
+    x_guest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    await authorize_booking_access(booking_code, claims, x_guest_token)
     tx = await db.scalar(
         select(PaymentTransaction).where(PaymentTransaction.booking_code == booking_code.strip())
     )
@@ -51,9 +64,20 @@ async def payment_webhook(
 
 
 @router.post("/simulate-webhook/{booking_code}", response_model=PaymentResponse)
-async def simulate_webhook(booking_code: str, db: AsyncSession = Depends(get_db)):
-    if not settings.enable_demo_webhook:
+async def simulate_webhook(
+    booking_code: str,
+    claims: dict | None = Depends(get_optional_claims),
+    x_internal_key: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not settings.is_demo_webhook_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Chế độ giả lập Webhook đang tắt")
+    is_privileged = bool(claims and claims.get("role") in ("STAFF", "ADMIN"))
+    if not (is_privileged or is_valid_internal_key(x_internal_key)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chỉ tài khoản STAFF/ADMIN hoặc test nội bộ mới được kích hoạt giả lập thanh toán",
+        )
     tx_id = f"DEMO-{uuid.uuid4().hex[:8].upper()}"
     return await confirm_payment_idempotent(
         db=db,

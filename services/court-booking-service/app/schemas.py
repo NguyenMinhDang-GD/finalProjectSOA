@@ -181,6 +181,22 @@ class BookingResponse(BaseModel):
     paid_at: datetime | None
     created_at: datetime
     slots: list[BookingSlotResponse]
+    guest_access_token: str | None = None
+
+
+class BookingAuthorizeRequest(BaseModel):
+    user_id: str | None = None
+    role: str | None = None
+    guest_token: str | None = None
+    require_owner: bool = False
+
+
+class BookingAuthorizeResponse(BaseModel):
+    authorized: bool
+    booking_code: str
+    status: str
+    total_amount: float
+    reason: str | None = None
 
 
 class CancelBookingRequest(BaseModel):
