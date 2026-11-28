@@ -1,0 +1,229 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: services/court-booking-service/app/models.py, services/court-booking-service/app/main.py
+@startuml ERD_BOOKING_DB
+title Database ERD: booking_db (court-booking-service)
+hide circle
+skinparam linetype ortho
+
+entity "branches" as branches {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **branch_number** : INTEGER <<NOT NULL, UQ, IX>>
+  * **title_note** : VARCHAR(150) <<NOT NULL, default=''>>
+  * **is_deleted** : BOOLEAN <<NOT NULL, default=false>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "locations" as locations {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **branch_id** : UUID <<FK -> branches.id, NOT NULL, IX>>
+  * **name** : VARCHAR(150) <<NOT NULL>>
+  * **address** : VARCHAR(300) <<NOT NULL>>
+  * **is_deleted** : BOOLEAN <<NOT NULL, default=false>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "courts" as courts {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  **location_id** : UUID <<FK -> locations.id, NULL, IX>>
+  * **name** : VARCHAR(120) <<NOT NULL>>
+  * **court_type** : VARCHAR(20) <<NOT NULL>>
+  * **surface** : VARCHAR(80) <<NOT NULL, default='Acrylic 7 lớp chuẩn thi đấu'>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='ACTIVE'>>
+  * **description** : TEXT <<NOT NULL, default=''>>
+  * **is_deleted** : BOOLEAN <<NOT NULL, default=false>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "pricing_rules" as pricing_rules {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **court_type** : VARCHAR(20) <<NOT NULL>>
+  * **start_hour** : INTEGER <<NOT NULL>>
+  * **end_hour** : INTEGER <<NOT NULL>>
+  * **is_weekend** : BOOLEAN <<NOT NULL, default=false>>
+  * **is_peak_hour** : BOOLEAN <<NOT NULL, default=false>>
+  * **price_per_hour** : NUMERIC(12,2) <<NOT NULL>>
+}
+
+entity "booking_orders" as booking_orders {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_code** : VARCHAR(40) <<NOT NULL, UQ, IX>>
+  **user_id** : UUID <<NULL, IX, logical -> auth_db.users.id>>
+  * **customer_name** : VARCHAR(150) <<NOT NULL>>
+  * **customer_phone** : VARCHAR(30) <<NOT NULL>>
+  * **customer_email** : VARCHAR(255) <<NOT NULL>>
+  * **court_id** : UUID <<FK -> courts.id, NOT NULL>>
+  * **court_name_snapshot** : VARCHAR(120) <<NOT NULL>>
+  * **branch_name_snapshot** : VARCHAR(180) <<NOT NULL, default=''>>
+  * **location_name_snapshot** : VARCHAR(180) <<NOT NULL, default=''>>
+  * **location_address_snapshot** : VARCHAR(300) <<NOT NULL, default=''>>
+  * **play_date** : DATE <<NOT NULL, IX>>
+  * **start_hour** : INTEGER <<NOT NULL>>
+  * **end_hour** : INTEGER <<NOT NULL>>
+  * **total_amount** : NUMERIC(12,2) <<NOT NULL>>
+  * **status** : VARCHAR(30) <<NOT NULL, default='PENDING_PAYMENT', IX>>
+  **guest_token_hash** : VARCHAR(64) <<NULL>>
+  **guest_token_expires_at** : TIMESTAMPTZ <<NULL>>
+  **guest_token_revoked_at** : TIMESTAMPTZ <<NULL>>
+  **lock_token** : VARCHAR(64) <<NULL>>
+  * **booking_source** : VARCHAR(20) <<NOT NULL, default='ONLINE'>>
+  * **booking_revision** : INTEGER <<NOT NULL, default=1>>
+  * **admission_status** : VARCHAR(20) <<NOT NULL, default='NONE'>>
+  **admission_ticket_id** : VARCHAR(64) <<NULL>>
+  **checked_in_at** : TIMESTAMPTZ <<NULL>>
+  **checked_in_by** : VARCHAR(150) <<NULL>>
+  **no_show_at** : TIMESTAMPTZ <<NULL>>
+  **no_show_by** : VARCHAR(150) <<NULL>>
+  **completed_at** : TIMESTAMPTZ <<NULL>>
+  **completed_by** : VARCHAR(150) <<NULL>>
+  **cancel_reason** : TEXT <<NULL>>
+  * **expires_at** : TIMESTAMPTZ <<NOT NULL>>
+  **paid_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "booking_slots" as booking_slots {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_id** : UUID <<FK -> booking_orders.id ON DELETE CASCADE, NOT NULL>>
+  * **court_id** : UUID <<FK -> courts.id, NOT NULL>>
+  * **play_date** : DATE <<NOT NULL>>
+  * **start_hour** : INTEGER <<NOT NULL>>
+  * **end_hour** : INTEGER <<NOT NULL>>
+  * **slot_price** : NUMERIC(12,2) <<NOT NULL>>
+  * **is_peak_hour** : BOOLEAN <<NOT NULL, default=false>>
+  * **slot_status** : VARCHAR(20) <<NOT NULL, default='LOCKED'>>
+  --
+  <<Partial UQ uq_active_court_slot: (court_id, play_date, start_hour) WHERE slot_status IN ('LOCKED','BOOKED')>>
+}
+
+entity "booking_reschedule_history" as booking_reschedule_history {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_id** : UUID <<NOT NULL, IX, logical -> booking_orders.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  **idempotency_key** : VARCHAR(80) <<NULL>>
+  * **previous_revision** : INTEGER <<NOT NULL>>
+  * **new_revision** : INTEGER <<NOT NULL>>
+  * **previous_court_id** : UUID <<NOT NULL>>
+  * **previous_court_name** : VARCHAR(120) <<NOT NULL>>
+  * **previous_play_date** : DATE <<NOT NULL>>
+  * **previous_start_hour** : INTEGER <<NOT NULL>>
+  * **previous_end_hour** : INTEGER <<NOT NULL>>
+  * **previous_amount** : NUMERIC(12,2) <<NOT NULL>>
+  * **new_court_id** : UUID <<NOT NULL>>
+  * **new_court_name** : VARCHAR(120) <<NOT NULL>>
+  * **new_play_date** : DATE <<NOT NULL>>
+  * **new_start_hour** : INTEGER <<NOT NULL>>
+  * **new_end_hour** : INTEGER <<NOT NULL>>
+  * **new_amount** : NUMERIC(12,2) <<NOT NULL>>
+  * **actor** : VARCHAR(150) <<NOT NULL>>
+  * **actor_role** : VARCHAR(30) <<NOT NULL>>
+  **reason** : TEXT <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_reschedule_booking_idem (booking_code, idempotency_key)>>
+  <<IX ix_reschedule_booking_created (booking_code, created_at)>>
+}
+
+entity "maintenance_blocks" as maintenance_blocks {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **court_id** : UUID <<FK -> courts.id, NOT NULL, IX>>
+  * **court_name_snapshot** : VARCHAR(120) <<NOT NULL>>
+  * **play_date** : DATE <<NOT NULL, IX>>
+  * **start_hour** : INTEGER <<NOT NULL>>
+  * **end_hour** : INTEGER <<NOT NULL>>
+  * **reason** : TEXT <<NOT NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='SCHEDULED', IX>>
+  **idempotency_key** : VARCHAR(80) <<NULL, UQ>>
+  * **created_by** : VARCHAR(150) <<NOT NULL>>
+  **cancelled_by** : VARCHAR(150) <<NULL>>
+  **cancelled_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  * **updated_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_maintenance_court_date_status (court_id, play_date, status)>>
+}
+
+entity "operational_audit_logs" as operational_audit_logs {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **entity_type** : VARCHAR(30) <<NOT NULL, IX>>
+  * **entity_id** : VARCHAR(80) <<NOT NULL, IX>>
+  * **action** : VARCHAR(60) <<NOT NULL, IX>>
+  * **actor** : VARCHAR(150) <<NOT NULL>>
+  * **actor_role** : VARCHAR(30) <<NOT NULL>>
+  **previous_state** : VARCHAR(60) <<NULL>>
+  **new_state** : VARCHAR(60) <<NULL>>
+  **reason** : TEXT <<NULL>>
+  **correlation_id** : VARCHAR(80) <<NULL>>
+  * **metadata_json** : JSON <<NOT NULL, default={}>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_op_audit_entity_created (entity_id, created_at)>>
+}
+
+entity "booking_compensations" as booking_compensations {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  **booking_id** : UUID <<NULL>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **payment_id** : VARCHAR(80) <<NOT NULL>>
+  **provider_tx_id** : VARCHAR(80) <<NULL>>
+  * **amount** : NUMERIC(12,2) <<NOT NULL, default=0>>
+  * **reason** : TEXT <<NOT NULL>>
+  * **status** : VARCHAR(30) <<NOT NULL, default='COMPENSATION_REQUIRED', IX>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_booking_comp_code_payment (booking_code, payment_id)>>
+}
+
+entity "outbox_events" as outbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **event_type** : VARCHAR(80) <<NOT NULL, IX>>
+  * **aggregate_id** : VARCHAR(80) <<NOT NULL, IX>>
+  * **schema_version** : INTEGER <<NOT NULL, default=1>>
+  **correlation_id** : VARCHAR(80) <<NULL, IX>>
+  **causation_id** : VARCHAR(80) <<NULL>>
+  * **payload** : JSON <<NOT NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PENDING', IX>>
+  * **retry_count** : INTEGER <<NOT NULL, default=0>>
+  * **next_retry_at** : TIMESTAMPTZ <<NOT NULL>>
+  **published_at** : TIMESTAMPTZ <<NULL>>
+  **last_error** : TEXT <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_booking_outbox_pending (status, next_retry_at, created_at)>>
+}
+
+entity "inbox_events" as inbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **consumer_name** : VARCHAR(80) <<NOT NULL>>
+  * **event_id** : VARCHAR(120) <<NOT NULL>>
+  * **event_type** : VARCHAR(80) <<NOT NULL>>
+  **correlation_id** : VARCHAR(80) <<NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PROCESSED'>>
+  * **processed_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_booking_inbox_consumer_event (consumer_name, event_id)>>
+}
+
+branches ||--o{ locations : "FK branch_id"
+locations ||--o{ courts : "FK location_id"
+courts ||--o{ booking_orders : "FK court_id"
+courts ||--o{ booking_slots : "FK court_id"
+courts ||--o{ maintenance_blocks : "FK court_id"
+booking_orders ||--|{ booking_slots : "FK booking_id (CASCADE)"
+booking_orders ..o{ booking_reschedule_history : "logical booking_id"
+booking_orders ..o{ booking_compensations : "logical booking_code"
+booking_orders ..o{ operational_audit_logs : "logical entity_id"
+
+@enduml

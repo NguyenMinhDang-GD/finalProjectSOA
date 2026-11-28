@@ -1,0 +1,87 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B00-B03 | Revision: v1.0-b03-draft
+' Sources: frontend/src/App.tsx, services/*/app/routers/*.py
+@startuml UC_GUEST_AND_CUSTOMER
+title Use Case Diagram — Guest & Customer
+left to right direction
+
+actor "Guest" as Guest
+actor "Customer (CUSTOMER)" as Customer
+Guest <|-- Customer
+
+rectangle "Public & Customer Flows" {
+  usecase "Browse Courts & Availability\n(GET /api/courts/availability)" as UC1
+  usecase "Register / Login\n(POST /api/auth/register, /login)" as UC2
+  usecase "Create Booking\n(POST /api/bookings)" as UC3
+  usecase "Lookup Booking & QR\n(GET /api/bookings/lookup/{code},\n/api/checkin/ticket/{code})" as UC4
+  usecase "Create Payment & Demo Webhook\n(POST /api/payments/create, /retry)" as UC5
+  usecase "Quote & Reschedule Booking\n(POST /api/bookings/{code}/reschedule*)" as UC6
+  usecase "Quote & Cancel Booking\n(GET /cancellation-quote, POST /cancel)" as UC7
+  usecase "View My Bookings\n(GET /api/bookings/my)" as UC8
+}
+
+Guest --> UC1
+Guest --> UC2
+Guest --> UC3
+Guest --> UC4
+Guest --> UC5
+Guest --> UC6
+Guest --> UC7
+Customer --> UC8
+
+UC3 ..> UC1 : <<include>>
+UC6 ..> UC1 : <<include>>
+@enduml
+
+@startuml UC_STAFF
+title Use Case Diagram — Staff Operations (STAFF)
+left to right direction
+
+actor "Staff (STAFF)" as Staff
+
+rectangle "Staff Desk (/staff/scanner)" {
+  usecase "Scan QR & Admit Check-in\n(POST /api/checkin/scan)" as S1
+  usecase "View Check-in & Booking Lists\n(GET /api/checkin/logs, /api/bookings/admin/list)" as S2
+  usecase "Create Walk-in Booking\n(POST /api/bookings/staff/walk-in)" as S3
+  usecase "Collect Simulated Cash\n(POST /api/payments/staff/cash-collect)" as S4
+  usecase "Mark Booking No-Show\n(POST /api/bookings/staff/{code}/no-show)" as S5
+  usecase "Complete Booking\n(POST /api/bookings/staff/{code}/complete)" as S6
+  usecase "View Court Maintenance\n(GET /api/bookings/maintenance)" as S7
+}
+
+Staff --> S1
+Staff --> S2
+Staff --> S3
+Staff --> S4
+Staff --> S5
+Staff --> S6
+Staff --> S7
+S3 ..> S4 : <<extend>>
+@enduml
+
+@startuml UC_ADMIN
+title Use Case Diagram — Admin Governance (ADMIN)
+left to right direction
+
+actor "Admin (ADMIN)" as Admin
+
+rectangle "Admin Dashboard (/admin)" {
+  usecase "Manage Branches, Locations & Courts\n(/api/branches, /api/locations, /api/courts)" as A1
+  usecase "Update Pricing Rules\n(PUT /api/pricing-rules/{id})" as A2
+  usecase "Manage Users\n(GET/POST /api/auth/users)" as A3
+  usecase "Schedule & Cancel Maintenance\n(POST /api/bookings/admin/maintenance*)" as A4
+  usecase "Force Cancel & Revoke Guest Token\n(POST /api/bookings/admin/{code}/cancel,\n/revoke-guest-token)" as A5
+  usecase "Approve / Reject / Execute Refunds\n(/api/payments/admin/refunds*)" as A6
+  usecase "Resolve Reconciliation Cases\n(POST /api/payments/admin/reconciliation/{id})" as A7
+  usecase "Inspect Financial, Operational & Email Logs\n(/audit-logs, /operational-audit, /logs)" as A8
+}
+
+Admin --> A1
+Admin --> A2
+Admin --> A3
+Admin --> A4
+Admin --> A5
+Admin --> A6
+Admin --> A7
+Admin --> A8
+@enduml

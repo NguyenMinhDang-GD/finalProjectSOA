@@ -1,0 +1,43 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: services/notification-service/app/models.py, services/notification-service/app/main.py
+@startuml ERD_NOTIFICATION_DB
+title Database ERD: notification_db (notification-service)
+hide circle
+skinparam linetype ortho
+
+entity "notification_logs" as notification_logs {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX, logical -> booking_db.booking_orders.booking_code>>
+  * **recipient_email** : VARCHAR(255) <<NOT NULL>>
+  * **subject** : VARCHAR(255) <<NOT NULL>>
+  * **channel** : VARCHAR(20) <<NOT NULL, default='EMAIL'>>
+  * **status** : VARCHAR(20) <<NOT NULL>>
+  * **retry_count** : INTEGER <<NOT NULL, default=0>>
+  **error_message** : TEXT <<NULL>>
+  **sent_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "inbox_events" as inbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **consumer_name** : VARCHAR(80) <<NOT NULL>>
+  * **event_id** : VARCHAR(120) <<NOT NULL>>
+  * **event_type** : VARCHAR(80) <<NOT NULL>>
+  **correlation_id** : VARCHAR(80) <<NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PROCESSED'>>
+  * **processed_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_notif_inbox_consumer_event (consumer_name, event_id)>>
+}
+
+note right of notification_logs
+  Legacy unique index uq_notification_sent_booking
+  was dropped in B03 so a booking can receive multiple
+  SENT lifecycle emails; idempotency is enforced via
+  inbox_events (consumer_name, event_id).
+end note
+
+@enduml

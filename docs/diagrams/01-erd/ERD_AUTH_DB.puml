@@ -1,0 +1,27 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: No | Phase: B00-B01 | Revision: v1.0-b03-draft
+' Sources: services/auth-service/app/models.py, services/auth-service/app/main.py
+@startuml ERD_AUTH_DB
+title Database ERD: auth_db (auth-service)
+hide circle
+skinparam linetype ortho
+
+entity "users" as users {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **email** : VARCHAR(255) <<NOT NULL, UQ, IX>>
+  * **password_hash** : VARCHAR(255) <<NOT NULL>>
+  * **full_name** : VARCHAR(150) <<NOT NULL>>
+  * **phone** : VARCHAR(30) <<NOT NULL, default=''>>
+  * **role** : VARCHAR(20) <<NOT NULL, default='CUSTOMER'>>
+  * **is_active** : BOOLEAN <<NOT NULL, default=true>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL, default=now()>>
+}
+
+note right of users
+  Roles: CUSTOMER | STAFF | ADMIN
+  Referenced logically by:
+  - booking_db.booking_orders.user_id
+end note
+
+@enduml

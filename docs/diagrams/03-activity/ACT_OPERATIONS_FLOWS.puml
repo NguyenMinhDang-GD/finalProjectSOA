@@ -1,0 +1,144 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B02-B03 | Revision: v1.0-b03-draft
+' Sources: services/checkin-qr-service/app/services/checkin_service.py, services/court-booking-service/app/services/operations_service.py, services/payment-service/app/services/payment_service.py
+@startuml ACT_QR_CHECKIN
+title Activity Diagram — QR Check-in
+start
+:Staff scans QR (POST /api/checkin/scan, STAFF/ADMIN);
+:Verify QR payload format (4 parts for v1 or 5 parts with r{rev}) & HMAC-SHA256 signature;
+if (Invalid signature?) then (yes)
+  :Return valid=false (Invalid QR);
+  stop
+endif
+:Load CheckinTicket;
+if (qr_rev != ticket.booking_revision?) then (yes)
+  :Return 400 Obsolete QR revision;
+  stop
+endif
+if (Booking in cancelled_bookings or ticket.status == REVOKED?) then (yes)
+  :Return valid=false (Ticket Cancelled/Revoked);
+  stop
+endif
+if (Not bypass_time_check and outside window?) then (yes)
+  :Return valid=false (Outside check-in window);
+  stop
+endif
+:Call court-booking-service POST /internal/{code}/claim-checkin (with expected_revision);
+if (Claim rejected (cancelled / no_show / revision mismatch)?) then (yes)
+  :Return error;
+  stop
+endif
+:Update CheckinTicket status=CHECKED_IN;
+:Return valid=true;
+stop
+@enduml
+
+@startuml ACT_WALKIN_AND_CASH
+title Activity Diagram — Walk-in Booking & Simulated Cash Collection
+start
+partition "Walk-in Booking (STAFF/ADMIN)" {
+  :POST /api/bookings/staff/walk-in;
+  :Validate slot_end_vn > now_vn (allows current hour);
+  :Lock Court FOR UPDATE + acquire Redis locks;
+  if (MaintenanceBlock or BookingSlot conflict?) then (yes)
+    :Return 409 Conflict;
+    stop
+  endif
+  :Create BookingOrder (booking_source=WALK_IN, status=PENDING_PAYMENT);
+  :Record OperationalAuditLog (WALK_IN_BOOKING_CREATED);
+  :Commit;
+}
+if (Collect cash at counter now?) then (yes)
+  partition "Simulated Counter Cash (STAFF/ADMIN)" {
+    :POST /api/payments/staff/cash-collect (booking_code, amount, idempotency_key);
+    :Fetch booking & check idempotency replay;
+    if (Booking status != PENDING_PAYMENT?) then (yes)
+      :Reject 400 (or handle late compensation if CANCELLED/EXPIRED);
+      stop
+    endif
+    if (amount != expected_amount?) then (yes)
+      :Return 400 Amount Mismatch;
+      stop
+    endif
+    :Record SUCCEEDED PaymentTransaction (SIMULATED_CASH, SIMULATED_COUNTER);
+    :Enqueue Outbox payment.succeeded;
+  }
+endif
+stop
+@enduml
+
+@startuml ACT_MAINTENANCE
+title Activity Diagram — Court Maintenance Scheduling
+start
+:ADMIN sends POST /api/bookings/admin/maintenance;
+if (start_hour >= end_hour?) then (yes)
+  :Return 400 Invalid Hour Range;
+  stop
+endif
+if (Idempotency key replay?) then (yes)
+  :Return existing MaintenanceBlock;
+  stop
+endif
+:Lock Court row FOR UPDATE;
+if (Overlaps active BookingSlot or SCHEDULED MaintenanceBlock?) then (yes)
+  :Return 409 Conflict;
+  stop
+endif
+:Create MaintenanceBlock (status=SCHEDULED);
+:Record OperationalAuditLog (MAINTENANCE_SCHEDULED) & Outbox court.maintenance_scheduled;
+:Commit;
+stop
+@enduml
+
+@startuml ACT_NO_SHOW_AND_COMPLETE
+title Activity Diagram — No-Show & Booking Completion
+start
+if (Staff Action?) then (Mark No-Show)
+  :POST /api/bookings/staff/{code}/no-show;
+  :Lock BookingOrder FOR UPDATE;
+  if (admission_status == ADMITTED?) then (yes)
+    :Return 409 Cannot mark No-Show after admission;
+    stop
+  endif
+  if (status != PAID or now_vn < slot_start + grace_minutes?) then (yes)
+    :Return 400 Not eligible for No-Show;
+    stop
+  endif
+  :Set status=NO_SHOW, record OperationalAuditLog & Outbox booking.no_show;
+else (Mark Complete)
+  :POST /api/bookings/staff/{code}/complete;
+  :Lock BookingOrder FOR UPDATE;
+  if (status == COMPLETED?) then (yes)
+    :Return idempotent BookingResponse;
+    stop
+  endif
+  if (status != PAID or admission_status != ADMITTED?) then (yes)
+    :Return 400 Must be PAID and ADMITTED;
+    stop
+  endif
+  if (now_vn < slot_end_vn and not (early_completion and len(reason)>=5)?) then (yes)
+    :Return 400 Early completion requires flag & reason;
+    stop
+  endif
+  :Set status=COMPLETED, record OperationalAuditLog & Outbox booking.completed;
+endif
+:Commit;
+stop
+@enduml
+
+@startuml ACT_RECONCILIATION
+title Activity Diagram — Financial Reconciliation
+start
+:Payment anomaly detected\n(UNDERPAYMENT / OVERPAYMENT / DUPLICATE_PAYMENT /\nLATE_PAYMENT / CONFIRMATION_FAILED / REFUND_MISMATCH);
+:Create ReconciliationCase (status=OPEN);
+:Admin inspects case on /admin;
+:POST /api/payments/admin/reconciliation/{case_id}\n(status=IN_REVIEW or RESOLVED, resolution_action, resolution_note);
+if (status == RESOLVED and case_type == OVERPAYMENT and note empty?) then (yes)
+  :Return 400 Resolution note required;
+  stop
+endif
+:Update ReconciliationCase + PaymentTransaction.reconciliation_status;
+:Insert FinancialAuditLog (RECONCILIATION_UPDATED);
+:Commit;
+stop
+@enduml

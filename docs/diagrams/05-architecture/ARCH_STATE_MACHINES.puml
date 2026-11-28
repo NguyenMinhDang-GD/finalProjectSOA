@@ -1,0 +1,64 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B02-B03 | Revision: v1.0-b03-draft
+' Sources: services/court-booking-service/app/models.py, operations_service.py, services/payment-service/app/models.py, payment_service.py
+@startuml SM_BOOKING
+title State Machine — BookingOrder.status
+[*] --> PENDING_PAYMENT : Create Online / WALK_IN Booking
+PENDING_PAYMENT --> PAID : payment.succeeded (Webhook or SIMULATED_CASH)
+PENDING_PAYMENT --> CANCELLED : Cancel Booking
+PENDING_PAYMENT --> EXPIRED : Expiration Worker (TTL)
+PAID --> PAID : Reschedule (Same Price, booking_revision + 1)
+PAID --> CANCELLED : Cancel Booking (Policy Refund)
+PAID --> NO_SHOW : Staff Mark No-Show (after grace, admission=NONE)
+PAID --> COMPLETED : Staff Mark Complete (admission=ADMITTED)
+CANCELLED --> [*]
+EXPIRED --> [*]
+NO_SHOW --> [*]
+COMPLETED --> [*]
+@enduml
+
+@startuml SM_ADMISSION
+title State Machine — BookingOrder.admission_status
+[*] --> NONE : Booking Created
+NONE --> ADMITTED : Staff QR Scan + claim-checkin (PAID, rev matches)
+ADMITTED --> [*]
+@enduml
+
+@startuml SM_PAYMENT
+title State Machine — PaymentTransaction.status
+[*] --> PENDING : POST /api/payments/create
+PENDING --> PROCESSING : Payment attempt started
+PENDING --> SUCCEEDED : Webhook / Counter Cash (exact or overpaid)
+PENDING --> FAILED : Webhook FAILED or UNDERPAID
+PENDING --> EXPIRED : booking.expired
+PENDING --> CANCELLED : booking.cancelled
+PROCESSING --> SUCCEEDED : Webhook SUCCEEDED
+PROCESSING --> FAILED : Webhook FAILED
+FAILED --> PENDING : POST /api/payments/booking/{code}/retry
+FAILED --> SUCCEEDED : Subsequent webhook SUCCEEDED
+SUCCEEDED --> [*]
+EXPIRED --> [*]
+CANCELLED --> [*]
+@enduml
+
+@startuml SM_REFUND
+title State Machine — RefundTransaction.status
+[*] --> REQUESTED : booking.cancelled (PAID) or Admin Create Refund
+REQUESTED --> APPROVED : Admin Approve
+REQUESTED --> REJECTED : Admin Reject
+APPROVED --> PROCESSING : Admin Execute Refund
+PROCESSING --> SUCCEEDED : Simulated Refund Succeeded
+PROCESSING --> FAILED : Simulated Refund Failed
+FAILED --> PROCESSING : Admin Retry Execute
+SUCCEEDED --> [*]
+REJECTED --> [*]
+@enduml
+
+@startuml SM_RECONCILIATION
+title State Machine — ReconciliationCase.status
+[*] --> OPEN : Anomaly Detected\n(UNDERPAYMENT, OVERPAYMENT, DUPLICATE_PAYMENT,\nLATE_PAYMENT, CONFIRMATION_FAILED, REFUND_MISMATCH)
+OPEN --> IN_REVIEW : Admin marks IN_REVIEW
+OPEN --> RESOLVED : Admin resolves with action & note
+IN_REVIEW --> RESOLVED : Admin resolves with action & note
+RESOLVED --> [*]
+@enduml

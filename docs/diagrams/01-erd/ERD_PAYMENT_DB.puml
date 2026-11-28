@@ -1,0 +1,195 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: services/payment-service/app/models.py, services/payment-service/app/main.py
+@startuml ERD_PAYMENT_DB
+title Database ERD: payment_db (payment-service)
+hide circle
+skinparam linetype ortho
+
+entity "payment_transactions" as payment_transactions {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_id** : UUID <<NOT NULL, UQ, logical -> booking_db.booking_orders.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, UQ, IX, logical -> booking_db.booking_orders.booking_code>>
+  * **amount** : NUMERIC(12,2) <<NOT NULL>>
+  * **expected_amount** : INTEGER <<NOT NULL, default=0>>
+  * **received_amount** : INTEGER <<NOT NULL, default=0>>
+  * **refunded_amount** : INTEGER <<NOT NULL, default=0>>
+  * **currency** : VARCHAR(10) <<NOT NULL, default='VND'>>
+  * **payment_mode** : VARCHAR(20) <<NOT NULL, default='MOCK_DEMO'>>
+  * **simulation_notice** : TEXT <<NOT NULL>>
+  * **transfer_content** : VARCHAR(80) <<NOT NULL, UQ>>
+  * **qr_image_url** : TEXT <<NOT NULL>>
+  * **bank_bin** : VARCHAR(20) <<NOT NULL, default='SIMULATED'>>
+  * **bank_account_no** : VARCHAR(40) <<NOT NULL, default='DEMO-ONLY'>>
+  * **bank_account_name** : VARCHAR(120) <<NOT NULL>>
+  * **provider** : VARCHAR(30) <<NOT NULL, default='SIMULATED_GATEWAY'>>
+  * **payment_method** : VARCHAR(30) <<NOT NULL, default='SIMULATED_ONLINE'>>
+  * **booking_revision** : INTEGER <<NOT NULL, default=1>>
+  **collected_by** : VARCHAR(150) <<NULL>>
+  **collected_at** : TIMESTAMPTZ <<NULL>>
+  **provider_tx_id** : VARCHAR(80) <<NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PENDING', IX>>
+  * **attempt_count** : INTEGER <<NOT NULL, default=0>>
+  **failure_reason** : TEXT <<NULL>>
+  **last_attempt_at** : TIMESTAMPTZ <<NULL>>
+  * **reconciliation_status** : VARCHAR(40) <<NOT NULL, default='NONE', IX>>
+  **reconciliation_note** : TEXT <<NULL>>
+  * **booking_snapshot** : JSON <<NOT NULL, default={}>>
+  * **expires_at** : TIMESTAMPTZ <<NOT NULL>>
+  **paid_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<Partial UQ uq_payment_provider_tx_id: (provider_tx_id) WHERE provider_tx_id IS NOT NULL>>
+}
+
+entity "payment_attempts" as payment_attempts {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **payment_id** : UUID <<NOT NULL, IX, logical -> payment_transactions.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **attempt_number** : INTEGER <<NOT NULL, default=1>>
+  * **provider** : VARCHAR(30) <<NOT NULL, default='SIMULATED_GATEWAY'>>
+  * **payment_method** : VARCHAR(30) <<NOT NULL, default='SIMULATED_ONLINE'>>
+  **provider_tx_id** : VARCHAR(80) <<NULL, IX>>
+  * **outcome** : VARCHAR(30) <<NOT NULL>>
+  * **expected_amount** : INTEGER <<NOT NULL, default=0>>
+  * **received_amount** : INTEGER <<NOT NULL, default=0>>
+  **failure_reason** : TEXT <<NULL>>
+  * **initiated_by** : VARCHAR(120) <<NOT NULL, default='system'>>
+  * **raw_payload** : JSON <<NOT NULL, default={}>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_payment_attempts_booking_created (booking_code, created_at)>>
+}
+
+entity "reconciliation_cases" as reconciliation_cases {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  **payment_id** : UUID <<NULL, IX, logical -> payment_transactions.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **case_type** : VARCHAR(40) <<NOT NULL, IX>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='OPEN', IX>>
+  * **expected_amount** : INTEGER <<NOT NULL, default=0>>
+  * **received_amount** : INTEGER <<NOT NULL, default=0>>
+  * **discrepancy_amount** : INTEGER <<NOT NULL, default=0>>
+  **provider_tx_id** : VARCHAR(80) <<NULL>>
+  **resolution_action** : VARCHAR(60) <<NULL>>
+  **resolution_note** : TEXT <<NULL>>
+  **resolved_by** : VARCHAR(120) <<NULL>>
+  **resolved_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  * **updated_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_reconciliation_status_created (status, created_at)>>
+}
+
+entity "refund_transactions" as refund_transactions {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **payment_id** : UUID <<NOT NULL, IX, logical -> payment_transactions.id>>
+  * **booking_id** : UUID <<NOT NULL, IX, logical -> booking_db.booking_orders.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **refund_code** : VARCHAR(50) <<NOT NULL, UQ>>
+  * **original_paid_amount** : INTEGER <<NOT NULL, default=0>>
+  * **requested_amount** : INTEGER <<NOT NULL>>
+  * **approved_amount** : INTEGER <<NOT NULL, default=0>>
+  * **refunded_amount** : INTEGER <<NOT NULL, default=0>>
+  * **policy_tier** : VARCHAR(40) <<NOT NULL, default='FULL_24H'>>
+  * **policy_percent** : INTEGER <<NOT NULL, default=100>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='REQUESTED', IX>>
+  * **reason** : TEXT <<NOT NULL>>
+  **rejection_reason** : TEXT <<NULL>>
+  **admin_override_reason** : TEXT <<NULL>>
+  **failure_reason** : TEXT <<NULL>>
+  * **provider** : VARCHAR(30) <<NOT NULL, default='SIMULATED_GATEWAY'>>
+  **provider_refund_id** : VARCHAR(80) <<NULL, UQ>>
+  * **retry_count** : INTEGER <<NOT NULL, default=0>>
+  * **requested_by** : VARCHAR(120) <<NOT NULL, default='customer'>>
+  **approved_by** : VARCHAR(120) <<NULL>>
+  **processed_by** : VARCHAR(120) <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  **approved_at** : TIMESTAMPTZ <<NULL>>
+  **completed_at** : TIMESTAMPTZ <<NULL>>
+  * **updated_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_refunds_booking_status (booking_code, status)>>
+}
+
+entity "financial_audit_logs" as financial_audit_logs {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **entity_type** : VARCHAR(30) <<NOT NULL, IX>>
+  * **entity_id** : VARCHAR(80) <<NOT NULL, IX>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **action** : VARCHAR(60) <<NOT NULL, IX>>
+  * **actor** : VARCHAR(120) <<NOT NULL>>
+  * **actor_role** : VARCHAR(30) <<NOT NULL, default='SYSTEM'>>
+  **previous_state** : VARCHAR(40) <<NULL>>
+  **new_state** : VARCHAR(40) <<NULL>>
+  * **amount_vnd** : INTEGER <<NOT NULL, default=0>>
+  **reason** : TEXT <<NULL>>
+  * **metadata_json** : JSON <<NOT NULL, default={}>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_fin_audit_booking_created (booking_code, created_at)>>
+}
+
+entity "payment_compensations" as payment_compensations {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  **payment_id** : UUID <<NULL, logical -> payment_transactions.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, IX>>
+  * **provider** : VARCHAR(30) <<NOT NULL, default='SIMULATED_GATEWAY'>>
+  * **payment_method** : VARCHAR(30) <<NOT NULL, default='SIMULATED_ONLINE'>>
+  * **booking_revision** : INTEGER <<NOT NULL, default=1>>
+  **collected_by** : VARCHAR(150) <<NULL>>
+  **collected_at** : TIMESTAMPTZ <<NULL>>
+  **provider_tx_id** : VARCHAR(80) <<NULL>>
+  * **amount** : NUMERIC(12,2) <<NOT NULL, default=0>>
+  * **reason** : TEXT <<NOT NULL>>
+  * **status** : VARCHAR(30) <<NOT NULL, default='COMPENSATION_REQUIRED', IX>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_payment_comp_code_tx (booking_code, provider_tx_id)>>
+}
+
+entity "outbox_events" as outbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **event_type** : VARCHAR(80) <<NOT NULL, IX>>
+  * **aggregate_id** : VARCHAR(80) <<NOT NULL, IX>>
+  * **schema_version** : INTEGER <<NOT NULL, default=1>>
+  **correlation_id** : VARCHAR(80) <<NULL, IX>>
+  **causation_id** : VARCHAR(80) <<NULL>>
+  * **payload** : JSON <<NOT NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PENDING', IX>>
+  * **retry_count** : INTEGER <<NOT NULL, default=0>>
+  * **next_retry_at** : TIMESTAMPTZ <<NOT NULL>>
+  **published_at** : TIMESTAMPTZ <<NULL>>
+  **last_error** : TEXT <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_payment_outbox_pending (status, next_retry_at, created_at)>>
+}
+
+entity "inbox_events" as inbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **consumer_name** : VARCHAR(80) <<NOT NULL>>
+  * **event_id** : VARCHAR(120) <<NOT NULL>>
+  * **event_type** : VARCHAR(80) <<NOT NULL>>
+  **correlation_id** : VARCHAR(80) <<NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PROCESSED'>>
+  * **processed_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_payment_inbox_consumer_event (consumer_name, event_id)>>
+}
+
+payment_transactions ..o{ payment_attempts : "logical payment_id"
+payment_transactions ..o{ reconciliation_cases : "logical payment_id"
+payment_transactions ..o{ refund_transactions : "logical payment_id"
+payment_transactions ..o{ payment_compensations : "logical payment_id"
+payment_transactions ..o{ financial_audit_logs : "logical booking_code"
+
+@enduml

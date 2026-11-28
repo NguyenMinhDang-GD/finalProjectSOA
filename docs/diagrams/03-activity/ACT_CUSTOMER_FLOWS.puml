@@ -1,0 +1,183 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B00-B03 | Revision: v1.0-b03-draft
+' Sources: services/auth-service/app/services/auth_service.py, services/court-booking-service/app/services/booking_service.py, operations_service.py, services/payment-service/app/services/payment_service.py
+@startuml ACT_AUTH
+title Activity Diagram — Registration & Login
+start
+if (Action?) then (Register)
+  :Submit email, full_name, phone, password;
+  if (Email already exists?) then (yes)
+    :Return 409 Conflict;
+    stop
+  else (no)
+    :Hash password (bcrypt);
+    :Insert User (role=CUSTOMER, is_active=true);
+    :Issue JWT access_token;
+  endif
+else (Login)
+  :Submit email, password;
+  if (User exists and password valid?) then (no)
+    :Return 401 Unauthorized;
+    stop
+  elseif (User is_active == false?) then (yes)
+    :Return 403 Forbidden;
+    stop
+  else (active)
+    :Issue JWT access_token;
+  endif
+endif
+stop
+@enduml
+
+@startuml ACT_COURT_BOOKING
+title Activity Diagram — Court Booking (Online)
+start
+:Select court_id, play_date, contiguous hours;
+if (Authenticated user?) then (yes)
+  :Verify active user via auth-service /internal/users/{id}/status;
+  if (Inactive?) then (yes)
+    :Return 403 Account Disabled;
+    stop
+  endif
+else (guest)
+  :Validate customer_name, phone, email;
+endif
+:Validate future slot (start_hour > now_vn if today);
+:Lock Court row FOR UPDATE + acquire Redis slot locks;
+if (MaintenanceBlock overlap?) then (yes)
+  :Release Redis locks;
+  :Return 409 Maintenance Conflict;
+  stop
+endif
+if (Existing LOCKED/BOOKED BookingSlot?) then (yes)
+  :Release Redis locks;
+  :Return 409 Slot Already Booked;
+  stop
+endif
+:Create BookingOrder (PENDING_PAYMENT, rev=1) & BookingSlot (LOCKED);
+if (Guest booking?) then (yes)
+  :Generate X-Guest-Token (store SHA-256 hash + expiry);
+endif
+:Commit DB transaction;
+:Return 201 BookingResponse;
+stop
+@enduml
+
+@startuml ACT_SIMULATED_PAYMENT
+title Activity Diagram — Simulated Online Payment
+start
+:POST /api/payments/create (booking_code);
+:Authorize owner or X-Guest-Token via court-booking-service;
+if (PaymentTransaction exists and status == PROCESSING?) then (yes)
+  :Return 400 Processing in progress;
+  stop
+endif
+:Create or return PENDING PaymentTransaction;
+:User triggers Simulated Outcome / Signed Webhook;
+:Verify HMAC X-Webhook-Signature;
+if (Invalid signature?) then (yes)
+  :Return 401 Invalid Signature;
+  stop
+endif
+if (Booking CANCELLED or EXPIRED?) then (yes)
+  :Record PaymentCompensation (COMPENSATION_REQUIRED) + Outbox payment.compensation_required;
+  stop
+elseif (Outcome == FAILED or cumulative < expected_amount?) then (yes)
+  :Set status=FAILED, record PaymentAttempt, open ReconciliationCase if underpaid;
+else (exact or overpaid)
+  :Set status=SUCCEEDED;
+  if (cumulative > expected_amount?) then (yes)
+    :Open ReconciliationCase (OVERPAYMENT);
+  endif
+  :Enqueue Outbox payment.succeeded;
+endif
+stop
+@enduml
+
+@startuml ACT_LOOKUP
+title Activity Diagram — Booking Lookup
+start
+:GET /api/bookings/lookup/{booking_code};
+:Query BookingOrder by booking_code;
+if (Not found?) then (yes)
+  :Return 404 Not Found;
+  stop
+endif
+if (Caller is STAFF or ADMIN?) then (yes)
+  :Allow access;
+elseif (Caller JWT matches order.user_id?) then (yes)
+  :Allow access;
+elseif (Valid non-revoked, non-expired X-Guest-Token matches hash?) then (yes)
+  :Allow access;
+else (unauthorized)
+  :Return 401/403 Unauthorized;
+  stop
+endif
+:Return BookingResponse;
+stop
+@enduml
+
+@startuml ACT_RESCHEDULING
+title Activity Diagram — Booking Rescheduling
+start
+:POST /api/bookings/{code}/reschedule;
+:Authorize owner, valid X-Guest-Token, or STAFF/ADMIN;
+:Lock BookingOrder FOR UPDATE;
+if (Idempotency key replay?) then (yes)
+  :Return existing BookingResponse;
+  stop
+endif
+if (Status terminal or admission_status == ADMITTED?) then (yes)
+  :Return 409 Cannot Reschedule;
+  stop
+endif
+if (Within 2h cutoff and not staff_override?) then (yes)
+  :Return 400 Cutoff Violation;
+  stop
+endif
+:Lock sorted Court rows FOR UPDATE & compute new_amount;
+if (Status == PAID and new_amount != total_amount?) then (yes)
+  :Return 400 Paid booking requires same price;
+  stop
+endif
+if (Identical slots?) then (yes)
+  :Return 400 Same schedule;
+  stop
+endif
+:Acquire Redis locks for added slots;
+if (MaintenanceBlock or BookingSlot conflict?) then (yes)
+  :Release added Redis locks & Return 409;
+  stop
+endif
+:Increment booking_revision (v -> v+1);
+:Replace BookingSlot rows, insert BookingRescheduleHistory & OperationalAuditLog;
+:Enqueue Outbox booking.rescheduled;
+:Commit & release old slot Redis locks;
+if (Status == PENDING_PAYMENT?) then (yes)
+  :Sync expected_amount & revision to payment-service;
+endif
+stop
+@enduml
+
+@startuml ACT_CANCELLATION_REFUND
+title Activity Diagram — Cancellation & Simulated Refund
+start
+:POST /api/bookings/{code}/cancel (or /admin/{code}/cancel);
+:Authorize caller & lock BookingOrder FOR UPDATE;
+if (admission_status == ADMITTED?) then (yes)
+  :Return 409 Checked-in booking cannot be cancelled;
+  stop
+endif
+if (Status already terminal?) then (yes)
+  :Return 409/400;
+  stop
+endif
+:Calculate policy tier (FULL_24H 100%, PARTIAL_2H_24H 50%, NON_REFUNDABLE_LT_2H 0%, or ADMIN_EXCEPTION);
+:Update BookingOrder status=CANCELLED, release BookingSlot rows;
+:Enqueue Outbox booking.cancelled (with refund entitlement metadata);
+:Commit DB transaction;
+if (Original booking was PAID and refund_amount > 0?) then (yes)
+  :payment-service consumer creates RefundTransaction (REQUESTED) + FinancialAuditLog;
+endif
+stop
+@enduml

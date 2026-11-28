@@ -1,0 +1,75 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B00-B03 | Revision: v1.0-b03-draft
+' Sources: frontend/src/App.tsx, services/*/app/routers/*.py
+@startuml UC_OVERALL
+title Pickleball SOA Arena — Overall Use Case Diagram
+left to right direction
+skinparam packageStyle rectangle
+
+actor "Guest\n(Unauthenticated)" as Guest
+actor "Customer\n(CUSTOMER)" as Customer
+actor "Staff\n(STAFF)" as Staff
+actor "Admin\n(ADMIN)" as Admin
+
+Guest <|-- Customer
+Staff <|-- Admin
+
+rectangle "Pickleball SOA Arena" {
+  usecase "View Branches, Courts & Availability" as UC_AVAIL
+  usecase "Register & Login" as UC_AUTH
+  usecase "Create Online Booking" as UC_BOOK
+  usecase "View Booking & QR Ticket\n(JWT or X-Guest-Token)" as UC_LOOKUP
+  usecase "Simulated Online Payment\n& Retry" as UC_PAY
+  usecase "Reschedule Booking" as UC_RESCHED
+  usecase "Cancel Booking & Request\nPolicy Refund" as UC_CANCEL
+  usecase "View My Bookings" as UC_MY
+  usecase "View Maintenance Schedule" as UC_MAINT_VIEW
+
+  usecase "Scan QR & Admit Check-in" as UC_SCAN
+  usecase "Create Walk-in Booking" as UC_WALKIN
+  usecase "Collect Simulated Cash\nat Counter" as UC_CASH
+  usecase "Mark No-Show" as UC_NOSHOW
+  usecase "Complete Booking" as UC_COMPLETE
+
+  usecase "Manage Branches, Locations,\nCourts & Pricing Rules" as UC_MASTER
+  usecase "Manage Users" as UC_USERS
+  usecase "Schedule / Cancel\nCourt Maintenance" as UC_MAINT_ADMIN
+  usecase "Manage Refunds\n(Approve / Reject / Execute)" as UC_REFUND_ADMIN
+  usecase "Resolve Reconciliation Cases" as UC_RECON
+  usecase "View Audit & Email Logs" as UC_AUDIT
+}
+
+Guest --> UC_AVAIL
+Guest --> UC_AUTH
+Guest --> UC_BOOK
+Guest --> UC_LOOKUP
+Guest --> UC_PAY
+Guest --> UC_RESCHED
+Guest --> UC_CANCEL
+Guest --> UC_MAINT_VIEW
+
+Customer --> UC_MY
+
+Staff --> UC_SCAN
+Staff --> UC_WALKIN
+Staff --> UC_CASH
+Staff --> UC_NOSHOW
+Staff --> UC_COMPLETE
+Staff --> UC_MAINT_VIEW
+Staff --> UC_LOOKUP
+
+Admin --> UC_MASTER
+Admin --> UC_USERS
+Admin --> UC_MAINT_ADMIN
+Admin --> UC_REFUND_ADMIN
+Admin --> UC_RECON
+Admin --> UC_AUDIT
+
+UC_BOOK ..> UC_AVAIL : <<include>>
+UC_WALKIN ..> UC_AVAIL : <<include>>
+UC_RESCHED ..> UC_AVAIL : <<include>>
+UC_PAY ..> UC_BOOK : <<extend>>
+UC_CANCEL ..> UC_REFUND_ADMIN : <<extend>>\n(when PAID)
+UC_WALKIN ..> UC_CASH : <<extend>>\n(counter payment)
+
+@enduml

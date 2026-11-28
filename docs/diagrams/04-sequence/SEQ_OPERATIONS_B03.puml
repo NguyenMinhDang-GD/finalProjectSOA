@@ -1,0 +1,96 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B03 | Revision: v1.0-b03-draft
+' Sources: services/court-booking-service/app/services/operations_service.py, services/payment-service/app/services/payment_service.py, services/checkin-qr-service/app/services/checkin_service.py, services/notification-service/app/services/email_service.py
+@startuml SEQ_RESCHEDULING
+title Sequence Diagram — Booking Rescheduling & Ticket Versioning
+actor "Customer / Staff" as Actor
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+participant "Redis" as RD
+participant "payment-service" as PAY
+participant "RabbitMQ" as RMQ
+participant "checkin-qr-service" as QR
+participant "notification-service" as NOTIF
+
+Actor -> CBS : POST /api/bookings/{code}/reschedule
+CBS -> BDB : BEGIN; SELECT BookingOrder FOR UPDATE & sorted Court FOR UPDATE
+CBS -> RD : Acquire locks for added slots
+CBS -> BDB : Check MaintenanceBlock & BookingSlot conflicts
+CBS -> BDB : Increment booking_revision (v -> v+1), replace BookingSlot rows
+CBS -> BDB : Insert BookingRescheduleHistory, OperationalAuditLog(BOOKING_RESCHEDULED), Outbox(booking.rescheduled); COMMIT
+CBS -> RD : Release old slot locks
+
+opt status == PENDING_PAYMENT (sync + Outbox durable fallback)
+  CBS -> PAY : POST /api/payments/internal/{code}/sync-revision (monotonic rev guard)
+end
+CBS --> Actor : 200 BookingResponse (new_revision)
+
+CBS -> RMQ : Outbox Dispatcher publishes booking.rescheduled
+RMQ -> PAY : Deliver booking.rescheduled -> Inbox dedup & monotonic sync_payment_revision
+RMQ -> QR : Deliver booking.rescheduled -> Inbox dedup; update rev & sign new QR (r{rev})
+RMQ -> NOTIF : Deliver booking.rescheduled -> send reschedule email
+@enduml
+
+@startuml SEQ_WALKIN_CASH
+title Sequence Diagram — Walk-in Booking & Simulated Counter Cash Collection
+actor Staff
+participant "court-booking-service" as CBS
+participant "payment-service" as PAY
+participant "RabbitMQ" as RMQ
+
+Staff -> CBS : POST /api/bookings/staff/walk-in (STAFF/ADMIN)
+CBS -> CBS : Allow current hour if slot_end_vn > now_vn; lock Court & Redis; insert BookingOrder(booking_source=WALK_IN) & OperationalAuditLog
+CBS --> Staff : 201 BookingResponse (PENDING_PAYMENT)
+
+Staff -> PAY : POST /api/payments/staff/cash-collect (booking_code, amount, idempotency_key)
+PAY -> CBS : GET /api/bookings/internal/{code}
+CBS --> PAY : BookingResponse (PENDING_PAYMENT, total_amount)
+PAY -> PAY : Verify amount == expected_amount; record PaymentTransaction(SIMULATED_CASH, SIMULATED_COUNTER) & Outbox(payment.succeeded)
+PAY --> Staff : 200 PaymentResponse (SUCCEEDED)
+PAY -> RMQ : Outbox publishes payment.succeeded -> CBS marks PAID -> QR issues ticket
+@enduml
+
+@startuml SEQ_MAINTENANCE_CONCURRENCY
+title Sequence Diagram — Maintenance vs Booking Concurrency (Redis-Independent Safety)
+actor Admin
+actor Customer
+participant "court-booking-service" as CBS
+database "booking_db (PostgreSQL)" as BDB
+
+par Concurrent Requests
+  Admin -> CBS : POST /api/bookings/admin/maintenance
+  CBS -> BDB : BEGIN; SELECT Court FOR UPDATE (serialized)
+  CBS -> BDB : Check BookingSlot & MaintenanceBlock overlap
+  CBS -> BDB : Insert MaintenanceBlock(SCHEDULED) + OperationalAuditLog + Outbox; COMMIT
+  CBS --> Admin : 201 MaintenanceBlockResponse
+else Blocked by Court Row Lock until Admin commits
+  Customer -> CBS : POST /api/bookings
+  CBS -> BDB : BEGIN; SELECT Court FOR UPDATE (waits for Admin tx)
+  CBS -> BDB : Sees committed MaintenanceBlock overlap
+  CBS -> BDB : ROLLBACK
+  CBS --> Customer : 409 Maintenance Conflict
+end
+@enduml
+
+@startuml SEQ_NOSHOW_AND_COMPLETE
+title Sequence Diagram — No-Show & Booking Completion
+actor Staff
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+participant "RabbitMQ" as RMQ
+participant "notification-service" as NOTIF
+
+alt No-Show Path
+  Staff -> CBS : POST /api/bookings/staff/{code}/no-show
+  CBS -> BDB : BEGIN; SELECT BookingOrder FOR UPDATE (guard admission != ADMITTED & after grace)
+  CBS -> BDB : Set status=NO_SHOW, OperationalAuditLog(BOOKING_NO_SHOW), Outbox(booking.no_show); COMMIT
+  CBS -> RMQ : Outbox publishes booking.no_show
+  RMQ -> NOTIF : Send No-Show email & insert NotificationLog
+else Completion Path
+  Staff -> CBS : POST /api/bookings/staff/{code}/complete
+  CBS -> BDB : BEGIN; SELECT BookingOrder FOR UPDATE (guard PAID & ADMITTED & end_time/early_completion)
+  CBS -> BDB : Set status=COMPLETED, OperationalAuditLog(BOOKING_COMPLETED), Outbox(booking.completed); COMMIT
+  CBS -> RMQ : Outbox publishes booking.completed
+  RMQ -> NOTIF : Send Completion email & insert NotificationLog
+end
+@enduml

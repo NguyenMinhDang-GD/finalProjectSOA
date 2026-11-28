@@ -1,0 +1,98 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: B00-B03 | Revision: v1.0-b03-draft
+' Sources: docker-compose.yml, docker-compose.prod.yml, infra/gateway/nginx.conf
+@startuml ARCH_SYSTEM_CONTEXT
+title System Context Diagram — Pickleball SOA Arena (Version B + B03)
+actor "Guest / Customer" as Customer
+actor "Staff" as Staff
+actor "Admin" as Admin
+
+rectangle "Pickleball SOA Arena" as System {
+  usecase "Court Booking, Rescheduling,\nSimulated Payment, QR Check-in,\nWalk-in, Maintenance & Lifecycle" as Core
+}
+
+rectangle "Mailpit (Dev/Test SMTP)" as Mailpit
+rectangle "Prometheus & Grafana\n(Observability)" as Obs
+
+Customer --> System : HTTPS/HTTP via Nginx Gateway
+Staff --> System : Desk Operations & QR Scan
+Admin --> System : Governance, Maintenance & Refunds
+System --> Mailpit : SMTP lifecycle emails
+Obs --> System : Scrapes /metrics endpoints
+@enduml
+
+@startuml ARCH_COMPONENT
+title Component Diagram — Pickleball SOA Arena
+package "Edge" {
+  [api-gateway (Nginx)] as GW
+  [web-frontend (React + Vite)] as FE
+}
+
+package "Microservices" {
+  [auth-service :8001] as AUTH
+  [court-booking-service :8002] as CBS
+  [payment-service :8003] as PAY
+  [checkin-qr-service :8004] as QR
+  [notification-service :8005] as NOTIF
+}
+
+package "Infrastructure & Data" {
+  database "PostgreSQL 16\n(auth_db, booking_db,\npayment_db, checkin_db,\nnotification_db)" as PG
+  [Redis 7 (Slot Locks)] as RD
+  [RabbitMQ 3.13\n(pickleball.events + DLQ)] as RMQ
+  [Mailpit SMTP] as SMTP
+}
+
+GW --> FE : Static SPA
+GW --> AUTH : /api/auth/*
+GW --> CBS : /api/branches, /locations,\n/courts, /pricing-rules, /bookings
+GW --> PAY : /api/payments/*
+GW --> QR : /api/checkin/*
+GW --> NOTIF : /api/notifications/*
+
+CBS --> AUTH : /internal/users/{id}/status
+PAY --> CBS : /internal/{code}/authorize, /bookings/internal/{code}
+QR --> CBS : /internal/{code}/claim-checkin, /authorize
+CBS --> PAY : /internal/{code}/sync-revision
+
+AUTH --> PG
+CBS --> PG
+PAY --> PG
+QR --> PG
+NOTIF --> PG
+
+CBS --> RD
+CBS <--> RMQ : Outbox / Consumers
+PAY <--> RMQ : Outbox / Consumers
+QR <--> RMQ : Outbox / Consumers
+NOTIF <-- RMQ : Consumers
+NOTIF --> SMTP : SMTP :1025
+@enduml
+
+@startuml ARCH_DEPLOYMENT
+title Deployment Diagram — Development vs Production-Like Profiles
+
+node "Development Profile (docker-compose.yml, pkb-net)" {
+  node "Host Ports Exposed" {
+    artifact "api-gateway (:8080)" as DEV_GW
+    artifact "Microservices (:8001-:8005)" as DEV_SVC
+    artifact "Postgres :5432 / Redis :6379 / RMQ :5672,:15672" as DEV_INFRA
+    artifact "Mailpit :8025 / Prometheus :9090 / Grafana :3100" as DEV_OBS
+    artifact "ngrok (optional tunnel profile)" as DEV_NGROK
+  }
+}
+
+node "Production-Like Isolated Profile (docker-compose.prod.yml, pkb-internal)" {
+  node "Host Exposed Port" {
+    artifact "api-gateway (:18081 -> :80)" as PROD_GW
+  }
+  node "Internal-Only Network (pkb-internal)" {
+    artifact "web-frontend (VITE_ENABLE_DEMO_CONTROLS=false)" as PROD_FE
+    artifact "auth / booking / payment / checkin / notification\n(APP_ENV=production, Swagger disabled)" as PROD_SVC
+    artifact "postgres / redis (AOF) / rabbitmq / mailpit" as PROD_INFRA
+  }
+  PROD_GW --> PROD_FE
+  PROD_GW --> PROD_SVC
+  PROD_SVC --> PROD_INFRA
+}
+@enduml

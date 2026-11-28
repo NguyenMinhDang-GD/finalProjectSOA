@@ -1,0 +1,74 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: services/checkin-qr-service/app/models.py, services/checkin-qr-service/app/main.py
+@startuml ERD_CHECKIN_DB
+title Database ERD: checkin_db (checkin-qr-service)
+hide circle
+skinparam linetype ortho
+
+entity "checkin_tickets" as checkin_tickets {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **booking_id** : UUID <<NOT NULL, UQ, logical -> booking_db.booking_orders.id>>
+  * **booking_code** : VARCHAR(40) <<NOT NULL, UQ, IX, logical -> booking_db.booking_orders.booking_code>>
+  * **customer_name** : VARCHAR(150) <<NOT NULL>>
+  * **customer_email** : VARCHAR(255) <<NOT NULL>>
+  * **customer_phone** : VARCHAR(30) <<NOT NULL, default=''>>
+  * **court_name** : VARCHAR(120) <<NOT NULL>>
+  * **branch_name** : VARCHAR(180) <<NOT NULL, default=''>>
+  * **location_name** : VARCHAR(180) <<NOT NULL, default=''>>
+  * **location_address** : VARCHAR(300) <<NOT NULL, default=''>>
+  * **play_date** : DATE <<NOT NULL>>
+  * **start_hour** : INTEGER <<NOT NULL>>
+  * **end_hour** : INTEGER <<NOT NULL>>
+  * **total_amount** : NUMERIC(12,2) <<NOT NULL, default=0>>
+  * **qr_payload** : TEXT <<NOT NULL>>
+  * **qr_signature** : VARCHAR(64) <<NOT NULL, UQ>>
+  * **booking_revision** : INTEGER <<NOT NULL, default=1>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='VALID', IX>>
+  **checked_in_by** : VARCHAR(255) <<NULL>>
+  **checked_in_at** : TIMESTAMPTZ <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "cancelled_bookings" as cancelled_bookings {
+  * **booking_code** : VARCHAR(40) <<PK, logical -> booking_db.booking_orders.booking_code>>
+  --
+  * **cancelled_at** : TIMESTAMPTZ <<NOT NULL>>
+}
+
+entity "outbox_events" as outbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **event_type** : VARCHAR(80) <<NOT NULL, IX>>
+  * **aggregate_id** : VARCHAR(80) <<NOT NULL, IX>>
+  * **schema_version** : INTEGER <<NOT NULL, default=1>>
+  **correlation_id** : VARCHAR(80) <<NULL, IX>>
+  **causation_id** : VARCHAR(80) <<NULL>>
+  * **payload** : JSON <<NOT NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PENDING', IX>>
+  * **retry_count** : INTEGER <<NOT NULL, default=0>>
+  * **next_retry_at** : TIMESTAMPTZ <<NOT NULL>>
+  **published_at** : TIMESTAMPTZ <<NULL>>
+  **last_error** : TEXT <<NULL>>
+  * **created_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<IX ix_checkin_outbox_pending (status, next_retry_at, created_at)>>
+}
+
+entity "inbox_events" as inbox_events {
+  * **id** : UUID <<PK, default=uuid4>>
+  --
+  * **consumer_name** : VARCHAR(80) <<NOT NULL>>
+  * **event_id** : VARCHAR(120) <<NOT NULL>>
+  * **event_type** : VARCHAR(80) <<NOT NULL>>
+  **correlation_id** : VARCHAR(80) <<NULL>>
+  * **status** : VARCHAR(20) <<NOT NULL, default='PROCESSED'>>
+  * **processed_at** : TIMESTAMPTZ <<NOT NULL>>
+  --
+  <<UQ uq_checkin_inbox_consumer_event (consumer_name, event_id)>>
+}
+
+checkin_tickets ..o| cancelled_bookings : "logical booking_code"
+
+@enduml

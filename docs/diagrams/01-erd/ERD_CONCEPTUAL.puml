@@ -1,0 +1,105 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: infra/postgres/init-multi-db.sql, services/*/app/models.py
+@startuml ERD_CONCEPTUAL
+title Pickleball SOA Arena — Overall Conceptual ERD (Physical FKs vs Cross-Service Logical References)
+hide circle
+skinparam linetype ortho
+
+package "auth_db (auth-service)" {
+  entity "users" as users {
+    * id : UUID <<PK>>
+    --
+    email : VARCHAR(255) <<UQ>>
+    role : VARCHAR(20)
+    is_active : BOOLEAN
+  }
+}
+
+package "booking_db (court-booking-service)" {
+  entity "branches" as branches
+  entity "locations" as locations
+  entity "courts" as courts
+  entity "pricing_rules" as pricing_rules
+  entity "booking_orders" as booking_orders {
+    * id : UUID <<PK>>
+    --
+    booking_code : VARCHAR(40) <<UQ>>
+    user_id : UUID <<logical -> auth_db.users.id>>
+    court_id : UUID <<FK>>
+    booking_revision : INTEGER
+    status : VARCHAR(30)
+    admission_status : VARCHAR(20)
+  }
+  entity "booking_slots" as booking_slots
+  entity "booking_reschedule_history" as booking_reschedule_history
+  entity "maintenance_blocks" as maintenance_blocks
+  entity "operational_audit_logs" as operational_audit_logs
+  entity "booking_compensations" as booking_compensations
+}
+
+package "payment_db (payment-service)" {
+  entity "payment_transactions" as payment_transactions {
+    * id : UUID <<PK>>
+    --
+    booking_id : UUID <<UQ, logical -> booking_db.booking_orders.id>>
+    booking_code : VARCHAR(40) <<UQ, logical -> booking_db.booking_orders.booking_code>>
+    status : VARCHAR(20)
+    reconciliation_status : VARCHAR(40)
+  }
+  entity "payment_attempts" as payment_attempts
+  entity "reconciliation_cases" as reconciliation_cases
+  entity "refund_transactions" as refund_transactions
+  entity "financial_audit_logs" as financial_audit_logs
+  entity "payment_compensations" as payment_compensations
+}
+
+package "checkin_db (checkin-qr-service)" {
+  entity "checkin_tickets" as checkin_tickets {
+    * id : UUID <<PK>>
+    --
+    booking_id : UUID <<UQ, logical -> booking_db.booking_orders.id>>
+    booking_code : VARCHAR(40) <<UQ, logical -> booking_db.booking_orders.booking_code>>
+    booking_revision : INTEGER
+    status : VARCHAR(20)
+  }
+  entity "cancelled_bookings" as cancelled_bookings
+}
+
+package "notification_db (notification-service)" {
+  entity "notification_logs" as notification_logs {
+    * id : UUID <<PK>>
+    --
+    booking_code : VARCHAR(40) <<logical -> booking_db.booking_orders.booking_code>>
+    status : VARCHAR(20)
+  }
+}
+
+' Physical FKs within booking_db
+branches ||--o{ locations : "FK branch_id"
+locations ||--o{ courts : "FK location_id"
+courts ||--o{ booking_orders : "FK court_id"
+courts ||--o{ booking_slots : "FK court_id"
+courts ||--o{ maintenance_blocks : "FK court_id"
+booking_orders ||--|{ booking_slots : "FK booking_id (CASCADE)"
+
+' Logical relationships within booking_db (no DB FK)
+booking_orders ..o{ booking_reschedule_history : "logical booking_id / booking_code"
+booking_orders ..o{ booking_compensations : "logical booking_code"
+booking_orders ..o{ operational_audit_logs : "logical entity_id"
+
+' Logical relationships within payment_db (no DB FK)
+payment_transactions ..o{ payment_attempts : "logical payment_id"
+payment_transactions ..o{ reconciliation_cases : "logical payment_id"
+payment_transactions ..o{ refund_transactions : "logical payment_id"
+payment_transactions ..o{ payment_compensations : "logical payment_id"
+payment_transactions ..o{ financial_audit_logs : "logical booking_code"
+
+' Cross-service logical references (dashed)
+users ..o{ booking_orders : "<<logical>> user_id"
+booking_orders ..|| payment_transactions : "<<logical>> booking_id / booking_code"
+booking_orders ..|| checkin_tickets : "<<logical>> booking_id / booking_code"
+booking_orders ..o| cancelled_bookings : "<<logical>> booking_code"
+booking_orders ..o{ notification_logs : "<<logical>> booking_code"
+
+@enduml

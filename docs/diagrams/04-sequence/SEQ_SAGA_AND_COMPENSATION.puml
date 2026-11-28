@@ -1,0 +1,53 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: No | Phase: P01/B02 | Revision: v1.0-b03-draft
+' Sources: services/court-booking-service/app/routers/bookings.py, services/payment-service/app/services/payment_service.py, services/checkin-qr-service/app/services/checkin_service.py
+@startuml SEQ_CANCEL_REFUND_SAGA
+title Sequence Diagram — Cancellation & Simulated Refund Saga
+actor "Customer / Admin" as Actor
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+participant "RabbitMQ\n(pickleball.events)" as RMQ
+participant "checkin-qr-service" as QR
+participant "payment-service" as PAY
+database "payment_db" as PDB
+participant "notification-service" as NOTIF
+
+Actor -> CBS : POST /api/bookings/{code}/cancel (or /admin/{code}/cancel)
+CBS -> BDB : BEGIN; SELECT BookingOrder FOR UPDATE
+CBS -> BDB : Guard admission_status != ADMITTED; compute policy tier
+CBS -> BDB : Set BookingOrder=CANCELLED, BookingSlot=RELEASED, Outbox(booking.cancelled); COMMIT
+CBS --> Actor : 200 BookingResponse (CANCELLED)
+
+CBS -> RMQ : Outbox Dispatcher publishes booking.cancelled
+RMQ -> QR : Deliver booking.cancelled
+QR -> QR : InboxEvent dedup; insert CancelledBooking & revoke CheckinTicket
+
+RMQ -> PAY : Deliver booking.cancelled
+PAY -> PDB : BEGIN; InboxEvent dedup; if PAID & refund_amount > 0 -> insert RefundTransaction(REQUESTED) & FinancialAuditLog; COMMIT
+
+opt Admin approves & executes simulated refund
+  Actor -> PAY : POST /api/payments/admin/refunds/{id}/approve
+  Actor -> PAY : POST /api/payments/admin/refunds/{id}/execute
+  PAY -> PDB : Simulated refund execution -> SUCCEEDED, update PaymentTransaction.refunded_amount, Outbox(refund.succeeded); COMMIT
+  PAY -> RMQ : Outbox Dispatcher publishes refund.succeeded
+  RMQ -> NOTIF : Deliver refund.succeeded -> NotificationLog
+end
+@enduml
+
+@startuml SEQ_LATE_PAYMENT_COMPENSATION
+title Sequence Diagram — Late Payment Compensation
+actor Gateway
+participant "payment-service" as PAY
+database "payment_db" as PDB
+participant "RabbitMQ\n(pickleball.events)" as RMQ
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+
+Gateway -> PAY : POST /api/payments/webhook (for CANCELLED/EXPIRED booking)
+PAY -> PDB : BEGIN; Insert PaymentCompensation (COMPENSATION_REQUIRED), ReconciliationCase (LATE_PAYMENT), Outbox(payment.compensation_required); COMMIT
+PAY --> Gateway : 200 PaymentResponse (COMPENSATION_REQUIRED)
+
+PAY -> RMQ : Outbox Dispatcher publishes payment.compensation_required
+RMQ -> CBS : Deliver payment.compensation_required
+CBS -> BDB : BEGIN; InboxEvent dedup; insert BookingCompensation (COMPENSATION_REQUIRED); COMMIT
+@enduml

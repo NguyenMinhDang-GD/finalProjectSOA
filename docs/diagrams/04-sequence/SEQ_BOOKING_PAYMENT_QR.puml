@@ -1,0 +1,97 @@
+' Target branch: upgrade/soa-complete | Baseline commit: 219531abeff4bd78adee175861c67859804b6c08
+' Includes uncommitted B03 changes: Yes | Phase: P01/B01/B02/B03 | Revision: v1.0-b03-draft
+' Sources: services/*/app/routers/*.py, services/*/app/services/*.py
+@startuml SEQ_AUTH
+title Sequence Diagram — Authentication
+actor Client
+participant "api-gateway\n(Nginx)" as GW
+participant "auth-service" as AUTH
+database "auth_db" as DB
+
+Client -> GW : POST /api/auth/register or /login
+GW -> AUTH : Forward request (rate-limited auth_limit)
+AUTH -> DB : Query / Insert User (bcrypt hash check)
+DB --> AUTH : User row (is_active check)
+AUTH --> GW : 200/201 AuthTokenResponse (JWT + User)
+GW --> Client : JSON response
+@enduml
+
+@startuml SEQ_BOOKING_CREATION
+title Sequence Diagram — Booking Creation
+actor Client
+participant "court-booking-service" as CBS
+participant "auth-service" as AUTH
+participant "Redis" as RD
+database "booking_db" as DB
+
+Client -> CBS : POST /api/bookings
+opt Authenticated User
+  CBS -> AUTH : GET /api/auth/internal/users/{id}/status (X-Internal-API-Key)
+  AUTH --> CBS : { is_active: true }
+end
+CBS -> DB : BEGIN; SELECT Court FOR UPDATE
+CBS -> RD : SET slot_lock NX PX (owner lock_token)
+CBS -> DB : Check MaintenanceBlock & active BookingSlot
+CBS -> DB : INSERT BookingOrder (PENDING_PAYMENT, rev=1) & BookingSlot (LOCKED)
+CBS -> DB : COMMIT
+CBS --> Client : 201 BookingResponse (+ guest_access_token if guest)
+@enduml
+
+@startuml SEQ_PAYMENT_AND_TICKET
+title Sequence Diagram — Simulated Payment Confirmation & QR Ticket Issuance
+actor Client
+participant "payment-service" as PAY
+database "payment_db" as PDB
+participant "RabbitMQ\n(pickleball.events)" as RMQ
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+participant "checkin-qr-service" as QR
+database "checkin_db" as QDB
+participant "notification-service" as NOTIF
+
+Client -> PAY : POST /api/payments/create
+PAY -> CBS : POST /api/bookings/internal/{code}/authorize
+CBS --> PAY : { authorized: true, total_amount }
+PAY -> PDB : INSERT PaymentTransaction (PENDING)
+PAY --> Client : 201 PaymentResponse (DEMO QR)
+
+Client -> PAY : POST /api/payments/webhook (X-Webhook-Signature)
+PAY -> PDB : BEGIN; Update status=SUCCEEDED, insert PaymentAttempt & Outbox(payment.succeeded); COMMIT
+PAY --> Client : 200 PaymentResponse
+
+PAY -> RMQ : Outbox Dispatcher publishes payment.succeeded
+RMQ -> CBS : Deliver payment.succeeded
+CBS -> BDB : BEGIN; InboxEvent dedup; BookingOrder=PAID, BookingSlot=BOOKED, Outbox(booking.confirmed); COMMIT
+CBS -> RMQ : Outbox Dispatcher publishes booking.confirmed
+
+RMQ -> QR : Deliver booking.confirmed
+QR -> QDB : BEGIN; InboxEvent dedup; Insert CheckinTicket (VALID, rev=1), Outbox(ticket.issued); COMMIT
+QR -> RMQ : Outbox Dispatcher publishes ticket.issued
+
+RMQ -> NOTIF : Deliver ticket.issued
+NOTIF -> NOTIF : Send SMTP email (Mailpit) & insert NotificationLog
+@enduml
+
+@startuml SEQ_QR_CHECKIN
+title Sequence Diagram — QR Check-in & Admission Claim
+actor Staff
+participant "checkin-qr-service" as QR
+database "checkin_db" as QDB
+participant "court-booking-service" as CBS
+database "booking_db" as BDB
+
+Staff -> QR : POST /api/checkin/scan (qr_data, STAFF/ADMIN JWT)
+QR -> QR : Verify HMAC signature & parse rev (v1 or r{rev})
+QR -> QDB : SELECT CheckinTicket & CancelledBooking check
+alt qr_rev != ticket.booking_revision
+  QR --> Staff : 400 Obsolete QR revision
+else Valid & within window
+  QR -> CBS : POST /api/bookings/internal/{code}/claim-checkin (expected_revision)
+  CBS -> BDB : BEGIN; SELECT BookingOrder FOR UPDATE
+  CBS -> BDB : Verify PAID, not CANCELLED/NO_SHOW/COMPLETED, rev matches
+  CBS -> BDB : Set admission_status=ADMITTED, insert OperationalAuditLog(BOOKING_ADMITTED); COMMIT
+  CBS --> QR : 200 ClaimCheckinResponse (admitted=true)
+  QR -> QDB : Update CheckinTicket status=CHECKED_IN; COMMIT
+  QR --> Staff : 200 ScanQRResponse (valid=true)
+end
+@enduml
