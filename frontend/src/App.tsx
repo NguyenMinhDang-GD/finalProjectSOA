@@ -1,35 +1,53 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { Navbar } from './components/Navbar';
+import { LoadingSkeleton } from './components/ui/FeedbackStates';
 import { AuthProvider } from './context/AuthContext';
-import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import { BookingPage } from './pages/BookingPage';
-import { CheckoutPage } from './pages/CheckoutPage';
 import { LoginPage } from './pages/LoginPage';
 import { LookupPage, MyBookingsPage } from './pages/LookupAndHistoryPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 import { RegisterPage } from './pages/RegisterPage';
-import { StaffScannerPage } from './pages/StaffScannerPage';
+
+const CheckoutPage = lazy(() =>
+  import('./pages/CheckoutPage').then((m) => ({ default: m.CheckoutPage }))
+);
+const StaffScannerPage = lazy(() =>
+  import('./pages/StaffScannerPage').then((m) => ({ default: m.StaffScannerPage }))
+);
+const AdminDashboardPage = lazy(() =>
+  import('./pages/AdminDashboardPage').then((m) => ({ default: m.AdminDashboardPage }))
+);
+
+const RouteFallback: React.FC = () => (
+  <div className="max-w-5xl mx-auto px-4 py-10">
+    <LoadingSkeleton rows={4} />
+  </div>
+);
 
 export const App: React.FC = () => {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <div className="min-h-screen flex flex-col bg-slate-50">
+        <div className="min-h-screen flex flex-col bg-warm-white text-charcoal">
           <Navbar />
           <main className="flex-1">
-            <Routes>
-              <Route path="/" element={<BookingPage />} />
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegisterPage />} />
-              <Route path="/checkout/:bookingCode" element={<CheckoutPage />} />
-              <Route path="/lookup" element={<LookupPage />} />
-              <Route path="/my-bookings" element={<MyBookingsPage />} />
-              <Route path="/staff/scanner" element={<StaffScannerPage />} />
-              <Route path="/admin" element={<AdminDashboardPage />} />
-            </Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/" element={<BookingPage />} />
+                <Route path="/login" element={<LoginPage />} />
+                <Route path="/register" element={<RegisterPage />} />
+                <Route path="/checkout/:bookingCode" element={<CheckoutPage />} />
+                <Route path="/lookup" element={<LookupPage />} />
+                <Route path="/my-bookings" element={<MyBookingsPage />} />
+                <Route path="/staff/scanner" element={<StaffScannerPage />} />
+                <Route path="/admin" element={<AdminDashboardPage />} />
+                <Route path="*" element={<NotFoundPage />} />
+              </Routes>
+            </Suspense>
           </main>
-          <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
-            Pickleball SOA Arena • FastAPI Microservices + React + RabbitMQ + Redis + Prometheus & Grafana
+          <footer className="bg-white border-t border-[#E2E3DA] py-5 px-4 text-center text-xs text-court-muted">
+            Pickleball SOA Arena • Câu lạc bộ Pickleball &amp; Hệ thống đặt sân trực tuyến
           </footer>
         </div>
       </BrowserRouter>

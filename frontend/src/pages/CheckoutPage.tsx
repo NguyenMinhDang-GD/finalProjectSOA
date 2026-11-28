@@ -1,7 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { CheckCircle2, Clock, Copy, Mail, QrCode, XCircle, Zap } from 'lucide-react';
-import { apiRequest, formatVND } from '../api/client';
+import { Check, CheckCircle2, Clock, Copy, Mail, ShieldAlert, XCircle, Zap } from 'lucide-react';
+import { apiRequest, formatDateVN, formatHourRange, formatVND } from '../api/client';
+import { Button } from '../components/ui/Button';
+import { AlertBanner, ConfirmDialog, LoadingSkeleton } from '../components/ui/FeedbackStates';
+import { QrTicketCard } from '../components/ui/QrTicketCard';
+import { StatusBadge } from '../components/ui/StatusBadge';
 import { BookingOrder, CheckinTicket, PaymentTransaction } from '../types';
 
 export const CheckoutPage: React.FC = () => {
@@ -11,67 +15,119 @@ export const CheckoutPage: React.FC = () => {
   const [ticket, setTicket] = useState<CheckinTicket | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(0);
   const [error, setError] = useState('');
+  const [pollWarning, setPollWarning] = useState('');
   const [simulating, setSimulating] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  const paymentInitializedRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    paymentInitializedRef.current = false;
+    setBooking(null);
+    setPayment(null);
+    setTicket(null);
+    setError('');
+    setPollWarning('');
+  }, [bookingCode]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
   const loadData = useCallback(async () => {
-    if (!bookingCode) return;
+    if (!bookingCode || inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const b = await apiRequest<BookingOrder>(`/api/bookings/lookup/${bookingCode}`);
       setBooking(b);
+      setPollWarning('');
 
       if (b.status === 'PENDING_PAYMENT') {
-        const p = await apiRequest<PaymentTransaction>('/api/payments/create', {
-          method: 'POST',
-          body: JSON.stringify({ booking_code: bookingCode }),
-        });
-        setPayment(p);
+        if (!paymentInitializedRef.current) {
+          const p = await apiRequest<PaymentTransaction>('/api/payments/create', {
+            method: 'POST',
+            body: JSON.stringify({ booking_code: bookingCode }),
+          });
+          paymentInitializedRef.current = true;
+          setPayment(p);
+        } else {
+          try {
+            const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
+            setPayment(p);
+          } catch {
+            // Keep existing payment state if transient GET fails
+          }
+        }
       } else if (b.status === 'PAID') {
         try {
           const p = await apiRequest<PaymentTransaction>(`/api/payments/booking/${bookingCode}`);
           setPayment(p);
         } catch {
-          // ignore
+          // Non-critical if payment lookup lags
         }
         try {
           const t = await apiRequest<CheckinTicket>(`/api/checkin/ticket/${bookingCode}`);
           setTicket(t);
         } catch {
-          // Ticket may take ~0.5s via RabbitMQ event
+          // Ticket issuance is asynchronous via RabbitMQ
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tải được thông tin đơn hàng');
+      const msg = err instanceof Error ? err.message : 'Không tải được thông tin đơn hàng';
+      if (!booking) {
+        setError(msg);
+      } else {
+        setPollWarning(`Tạm thời mất kết nối khi cập nhật trạng thái (${msg}). Đang thử lại...`);
+      }
+    } finally {
+      inFlightRef.current = false;
     }
-  }, [bookingCode]);
+  }, [bookingCode, booking]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Poll payment/ticket status every 2.5s while waiting
+  // Poll every 2.5s while awaiting payment or ticket issuance
   useEffect(() => {
     if (!booking) return;
     if (booking.status === 'PAID' && ticket) return;
     if (booking.status === 'CANCELLED' || booking.status === 'EXPIRED') return;
 
-    const timer = setInterval(() => {
+    const timer = window.setInterval(() => {
       loadData();
     }, 2500);
-    return () => clearInterval(timer);
+    return () => window.clearInterval(timer);
   }, [booking, ticket, loadData]);
 
-  // Countdown timer
+  // 15-minute reservation countdown
   useEffect(() => {
     if (!booking || booking.status !== 'PENDING_PAYMENT') return;
     const updateCountdown = () => {
-      const diff = Math.max(0, Math.floor((new Date(booking.expires_at).getTime() - Date.now()) / 1000));
+      const diff = Math.max(
+        0,
+        Math.floor((new Date(booking.expires_at).getTime() - Date.now()) / 1000)
+      );
       setSecondsLeft(diff);
     };
     updateCountdown();
-    const interval = setInterval(updateCountdown, 1000);
-    return () => clearInterval(interval);
+    const interval = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(interval);
   }, [booking]);
+
+  const handleCopyTransfer = () => {
+    const content = payment?.transfer_content || `PKB ${booking?.booking_code || ''}`;
+    navigator.clipboard.writeText(content).catch(() => undefined);
+    setCopied(true);
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => setCopied(false), 2000);
+  };
 
   const handleSimulatePayment = async () => {
     if (!bookingCode) return;
@@ -79,282 +135,298 @@ export const CheckoutPage: React.FC = () => {
     setError('');
     try {
       await apiRequest(`/api/payments/simulate-webhook/${bookingCode}`, { method: 'POST' });
-      // Wait briefly for RabbitMQ async propagation
-      setTimeout(() => loadData(), 600);
-      setTimeout(() => loadData(), 1500);
+      window.setTimeout(() => loadData(), 600);
+      window.setTimeout(() => loadData(), 1600);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không thể giả lập thanh toán');
+      setError(err instanceof Error ? err.message : 'Không thể mô phỏng thanh toán');
     } finally {
       setSimulating(false);
     }
   };
 
-  const handleCancelBooking = async () => {
+  const handleConfirmCancel = async () => {
     if (!bookingCode) return;
+    setCancelling(true);
+    setError('');
     try {
       await apiRequest(`/api/bookings/${bookingCode}/cancel`, { method: 'POST' });
-      loadData();
+      setConfirmCancelOpen(false);
+      await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Hủy đơn thất bại');
+    } finally {
+      setCancelling(false);
     }
   };
 
   if (error && !booking) {
     return (
-      <div className="max-w-xl mx-auto mt-10 bg-white rounded-2xl p-6 border border-red-200 text-center">
-        <p className="text-red-600 font-medium">{error}</p>
-        <Link to="/" className="inline-block mt-4 text-sm text-emerald-700 font-semibold hover:underline">
-          ← Quay lại trang đặt sân
-        </Link>
+      <div className="max-w-xl mx-auto px-4 py-12">
+        <AlertBanner tone="error" title="Không tải được đơn đặt sân" onRetry={loadData}>
+          {error}
+        </AlertBanner>
+        <div className="mt-4 text-center">
+          <Link to="/" className="text-sm font-bold text-court hover:underline">
+            ← Quay lại trang đặt sân
+          </Link>
+        </div>
       </div>
     );
   }
 
   if (!booking) {
-    return <div className="max-w-xl mx-auto mt-10 text-center text-slate-500">Đang tải thông tin thanh toán...</div>;
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-10">
+        <LoadingSkeleton rows={4} />
+      </div>
+    );
   }
 
   const mm = String(Math.floor(secondsLeft / 60)).padStart(2, '0');
   const ss = String(secondsLeft % 60).padStart(2, '0');
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      {error && (
-        <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
-      )}
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-5">
+      {error && <AlertBanner tone="error">{error}</AlertBanner>}
+      {pollWarning && <AlertBanner tone="warning">{pollWarning}</AlertBanner>}
 
       {booking.status === 'PAID' ? (
-        <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm overflow-hidden">
-          <div className="bg-emerald-700 text-white p-6 text-center">
-            <CheckCircle2 className="w-12 h-12 mx-auto text-lime-300 mb-2" />
-            <h1 className="text-2xl font-bold">Thanh toán thành công!</h1>
-            <p className="text-sm text-emerald-100 mt-1">
-              Hệ thống đã phát hành vé QR và gửi email tới <strong>{booking.customer_email}</strong>
-            </p>
-          </div>
-
-          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
-            <div className="space-y-3 text-sm">
-              <h2 className="font-bold text-slate-900 text-base border-b pb-2">Thông tin vé đặt sân</h2>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Mã đặt sân:</span>
-                <span className="font-bold text-slate-900">{booking.booking_code}</span>
-              </div>
-              {booking.branch_name_snapshot && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Chi nhánh:</span>
-                  <span className="font-semibold text-emerald-800">{booking.branch_name_snapshot}</span>
-                </div>
-              )}
-              {booking.location_name_snapshot && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Địa điểm:</span>
-                  <span className="font-semibold">{booking.location_name_snapshot}</span>
-                </div>
-              )}
-              {booking.location_address_snapshot && (
-                <div className="flex justify-between gap-4">
-                  <span className="text-slate-500 shrink-0">Địa chỉ:</span>
-                  <span className="font-medium text-right text-slate-700">{booking.location_address_snapshot}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span className="text-slate-500">Sân:</span>
-                <span className="font-semibold">{booking.court_name_snapshot}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Ngày chơi:</span>
-                <span className="font-semibold">{booking.play_date}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Khung giờ:</span>
-                <span className="font-semibold">
-                  {String(booking.start_hour).padStart(2, '0')}:00 - {String(booking.end_hour).padStart(2, '0')}:00
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Khách hàng:</span>
-                <span className="font-semibold">{booking.customer_name}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Tổng thanh toán:</span>
-                <span className="font-bold text-emerald-700">{formatVND(booking.total_amount)}</span>
-              </div>
-              <div className="mt-4 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-start gap-2">
-                <Mail className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>
-                  Email kèm ảnh QR đã được gửi qua RabbitMQ Notification Service (có thể kiểm tra hộp thư demo Mailpit tại cổng <code>:8025</code>).
-                </span>
+        <div className="space-y-5">
+          <div className="bg-court text-white rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="w-8 h-8 text-ball-lime shrink-0 mt-0.5" aria-hidden="true" />
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold">Đặt sân &amp; Thanh toán thành công</h1>
+                <p className="text-sm text-[#C7D6CD] mt-1">
+                  Vé QR đã được phát hành và gửi tới email <strong>{booking.customer_email}</strong>.
+                </p>
               </div>
             </div>
-
-            <div className="bg-slate-50 border border-dashed border-emerald-400 rounded-2xl p-6 text-center">
-              <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 uppercase mb-3">
-                <QrCode className="w-4 h-4" />
-                <span>Mã QR Check-in tại sân</span>
-              </div>
-              {ticket?.qr_image_base64 ? (
-                <>
-                  <img
-                    src={ticket.qr_image_base64}
-                    alt="Ticket QR"
-                    className="w-52 h-52 mx-auto rounded-lg bg-white p-2 border border-slate-200 shadow-sm"
-                  />
-                  <div className="mt-3 text-[11px] text-slate-500 break-all font-mono bg-white p-2 rounded border border-slate-200">
-                    {ticket.qr_payload}
-                  </div>
-                  <div className="mt-2">
-                    <span
-                      className={`inline-block text-xs font-bold px-3 py-1 rounded-full ${
-                        ticket.status === 'CHECKED_IN'
-                          ? 'bg-blue-100 text-blue-800'
-                          : ticket.status === 'REVOKED'
-                          ? 'bg-red-100 text-red-700'
-                          : 'bg-emerald-100 text-emerald-800'
-                      }`}
-                    >
-                      Trạng thái vé: {ticket.status}
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-slate-500 py-10">Đang sinh mã QR qua RabbitMQ...</p>
-              )}
-            </div>
+            <StatusBadge status="PAID" />
           </div>
 
-          <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
-            <Link to="/" className="text-sm font-semibold text-emerald-700 hover:underline">
+          <QrTicketCard
+            ticket={ticket}
+            bookingCode={booking.booking_code}
+            branchName={booking.branch_name_snapshot}
+            locationName={booking.location_name_snapshot}
+            locationAddress={booking.location_address_snapshot}
+            courtName={booking.court_name_snapshot}
+            playDate={booking.play_date}
+            startHour={booking.start_hour}
+            endHour={booking.end_hour}
+            customerName={booking.customer_name}
+            totalAmount={booking.total_amount}
+          />
+
+          <div className="rounded-xl bg-white border border-[#D4D6CD] px-4 py-3 text-xs text-court-muted flex items-center gap-2 no-print">
+            <Mail className="w-4 h-4 text-court shrink-0" aria-hidden="true" />
+            <span>
+              Nếu chưa thấy email trong hộp thư chính, vui lòng kiểm tra hộp thư thử nghiệm hoặc tra cứu lại bằng mã{' '}
+              <strong className="font-mono text-charcoal">{booking.booking_code}</strong>.
+            </span>
+          </div>
+
+          <div className="flex flex-wrap justify-between items-center gap-3 pt-1 no-print">
+            <Link to="/" className="text-sm font-bold text-court hover:underline">
               ← Đặt thêm sân khác
             </Link>
-            <Link to="/lookup" className="text-sm font-semibold text-slate-700 hover:underline">
-              Tra cứu vé
+            <Link to="/lookup" className="text-sm font-bold text-charcoal hover:underline">
+              Tra cứu vé khác →
             </Link>
           </div>
         </div>
       ) : booking.status === 'CANCELLED' || booking.status === 'EXPIRED' ? (
-        <div className="bg-white rounded-2xl border border-red-200 p-8 text-center shadow-sm">
-          <XCircle className="w-12 h-12 text-red-500 mx-auto mb-3" />
-          <h1 className="text-xl font-bold text-slate-900">
+        <div className="bg-white rounded-2xl border border-[#D4D6CD] p-8 text-center">
+          <XCircle className="w-12 h-12 text-[#B93829] mx-auto mb-3" aria-hidden="true" />
+          <div className="mb-2">
+            <StatusBadge status={booking.status} />
+          </div>
+          <h1 className="text-xl font-bold text-charcoal">
             Đơn đặt sân đã {booking.status === 'EXPIRED' ? 'hết hạn giữ chỗ' : 'bị hủy'}
           </h1>
-          <p className="text-sm text-slate-600 mt-1">{booking.cancel_reason || 'Các khung giờ đã được giải phóng.'}</p>
+          <p className="text-sm text-court-muted mt-1.5 max-w-md mx-auto">
+            {booking.cancel_reason || 'Các khung giờ trước đó đã được giải phóng để người chơi khác đặt.'}
+          </p>
           <Link
             to="/"
-            className="inline-block mt-5 bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold"
+            className="inline-block mt-6 bg-court hover:bg-court-soft text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors"
           >
             Đặt lịch mới
           </Link>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="bg-amber-50 border-b border-amber-200 px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-lg font-bold text-slate-900">Chuyển khoản VietQR giữ sân</h1>
-              <p className="text-xs text-slate-600">
-                Mã đơn: <strong className="text-slate-900">{booking.booking_code}</strong> • Vui lòng thanh toán trước khi hết giờ
-              </p>
-            </div>
-            <div className="flex items-center gap-2 bg-amber-100 text-amber-900 px-3.5 py-2 rounded-xl font-mono font-bold text-base">
-              <Clock className="w-4 h-4" />
-              <span>
-                {mm}:{ss}
-              </span>
-            </div>
-          </div>
-
-          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
-            <div className="text-center bg-slate-50 rounded-2xl p-5 border border-slate-200">
-              {payment?.qr_image_url ? (
-                <img
-                  src={payment.qr_image_url}
-                  alt="VietQR"
-                  className="w-64 mx-auto rounded-xl border border-slate-200 bg-white shadow-sm"
-                />
-              ) : (
-                <div className="py-16 text-sm text-slate-500">Đang tạo mã VietQR...</div>
-              )}
-              <p className="text-xs text-slate-500 mt-3">Quét bằng ứng dụng ngân hàng bất kỳ hỗ trợ VietQR</p>
+        <div className="space-y-5">
+          {/* Pending Payment Header */}
+          <div className="bg-white rounded-2xl border border-[#D4D6CD] overflow-hidden">
+            <div className="bg-court text-white px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-xs uppercase tracking-wider text-[#B7C9BE] font-semibold">
+                  Chờ thanh toán chuyển khoản
+                </div>
+                <h1 className="text-lg sm:text-xl font-bold font-mono mt-0.5">{booking.booking_code}</h1>
+              </div>
+              <div className="flex items-center gap-2 bg-court-deep px-3.5 py-2 rounded-xl border border-court-soft text-sm font-mono font-bold tabular-nums">
+                <Clock className="w-4 h-4 text-ball-lime" aria-hidden="true" />
+                <span>
+                  Giữ chỗ còn: {mm}:{ss}
+                </span>
+              </div>
             </div>
 
-            <div className="space-y-4">
-              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-2 text-sm">
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+              {/* Booking Summary */}
+              <div className="space-y-3 text-sm">
+                <h2 className="font-bold text-charcoal text-base pb-2 border-b border-[#ECEBE2]">
+                  Chi tiết đơn đặt sân
+                </h2>
                 {booking.branch_name_snapshot && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Chi nhánh:</span>
-                    <span className="font-semibold text-emerald-800">{booking.branch_name_snapshot}</span>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-court-muted">Chi nhánh:</span>
+                    <span className="font-semibold text-court text-right">
+                      {booking.branch_name_snapshot}
+                    </span>
                   </div>
                 )}
                 {booking.location_name_snapshot && (
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Địa điểm:</span>
-                    <span className="font-semibold">{booking.location_name_snapshot}</span>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-court-muted">Địa điểm:</span>
+                    <span className="font-semibold text-right">{booking.location_name_snapshot}</span>
+                  </div>
+                )}
+                {booking.location_address_snapshot && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-court-muted shrink-0">Địa chỉ:</span>
+                    <span className="text-right text-charcoal">{booking.location_address_snapshot}</span>
                   </div>
                 )}
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Sân:</span>
-                  <span className="font-semibold">{booking.court_name_snapshot}</span>
+                  <span className="text-court-muted">Sân:</span>
+                  <span className="font-bold text-charcoal">{booking.court_name_snapshot}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Thời gian:</span>
-                  <span className="font-semibold">
-                    {booking.play_date} ({String(booking.start_hour).padStart(2, '0')}:00 -{' '}
-                    {String(booking.end_hour).padStart(2, '0')}:00)
+                  <span className="text-court-muted">Ngày chơi:</span>
+                  <span className="font-semibold tabular-nums">{formatDateVN(booking.play_date)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-court-muted">Khung giờ:</span>
+                  <span className="font-semibold tabular-nums">
+                    {formatHourRange(booking.start_hour, booking.end_hour)}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Chủ tài khoản:</span>
-                  <span className="font-semibold">{payment?.bank_account_name || 'SAN PICKLEBALL SOA'}</span>
+                  <span className="text-court-muted">Khách hàng:</span>
+                  <span className="font-semibold">{booking.customer_name}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Số tài khoản:</span>
-                  <span className="font-mono font-semibold">{payment?.bank_account_no || '0123456789'}</span>
+                <div className="flex justify-between pt-3 border-t border-[#ECEBE2] text-base">
+                  <span className="font-bold text-charcoal">Số tiền cần chuyển:</span>
+                  <span className="font-bold text-court tabular-nums">{formatVND(booking.total_amount)}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-500">Nội dung CK:</span>
-                  <button
+
+                <div className="pt-3">
+                  <Button
                     type="button"
-                    onClick={() => {
-                      if (payment?.transfer_content) {
-                        navigator.clipboard.writeText(payment.transfer_content);
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 1500);
-                      }
-                    }}
-                    className="inline-flex items-center gap-1 font-mono font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setConfirmCancelOpen(true)}
                   >
-                    <span>{payment?.transfer_content || `PKB ${booking.booking_code}`}</span>
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                {copied && <div className="text-right text-[11px] text-emerald-600">Đã sao chép nội dung CK!</div>}
-                <div className="pt-2 border-t border-slate-200 flex justify-between items-center">
-                  <span className="font-medium">Số tiền cần chuyển:</span>
-                  <span className="text-xl font-bold text-emerald-700">{formatVND(booking.total_amount)}</span>
+                    Hủy giữ chỗ
+                  </Button>
                 </div>
               </div>
 
-              <button
-                type="button"
-                disabled={simulating}
-                onClick={handleSimulatePayment}
-                className="w-full flex items-center justify-center gap-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-semibold py-3 rounded-xl text-sm transition shadow-sm"
-              >
-                <Zap className="w-4 h-4 text-lime-300" />
-                <span>{simulating ? 'Đang xử lý Webhook...' : 'Giả lập Ngân hàng Xác nhận (Demo Webhook)'}</span>
-              </button>
+              {/* VietQR Transfer Panel */}
+              <div className="bg-warm-white rounded-2xl border border-[#D4D6CD] p-5 text-center">
+                <h2 className="text-sm font-bold text-charcoal mb-3">
+                  Quét mã VietQR bằng ứng dụng Ngân hàng
+                </h2>
+                {payment?.qr_image_url ? (
+                  <div className="bg-white p-3 rounded-xl border border-[#D4D6CD] inline-block shadow-sm">
+                    <img
+                      src={payment.qr_image_url}
+                      alt={`Mã VietQR thanh toán đơn ${booking.booking_code}`}
+                      className="w-52 h-52 object-contain block"
+                    />
+                  </div>
+                ) : (
+                  <div className="h-52 flex items-center justify-center text-sm text-court-muted">
+                    Đang tạo mã VietQR...
+                  </div>
+                )}
 
-              <button
-                type="button"
-                onClick={handleCancelBooking}
-                className="w-full border border-red-200 text-red-600 hover:bg-red-50 font-medium py-2.5 rounded-xl text-sm transition"
-              >
-                Hủy đơn & Nhả khung giờ
-              </button>
+                <div className="mt-4 bg-white rounded-xl border border-[#D4D6CD] p-3.5 text-left text-xs space-y-2">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-court-muted">Chủ tài khoản:</span>
+                    <span className="font-bold text-charcoal">
+                      {payment?.bank_account_name || 'SAN PICKLEBALL SOA'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-court-muted">Số tài khoản:</span>
+                    <span className="font-mono font-bold text-charcoal tabular-nums">
+                      {payment?.bank_account_no || '0123456789'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center gap-2 pt-1 border-t border-[#ECEBE2]">
+                    <span className="text-court-muted">Nội dung CK:</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyTransfer}
+                      className="inline-flex items-center gap-1.5 font-mono font-bold text-court bg-[#E9EFEA] hover:bg-[#DCE7DF] px-2.5 py-1 rounded-md transition-colors"
+                    >
+                      <span>{payment?.transfer_content || `PKB ${booking.booking_code}`}</span>
+                      {copied ? (
+                        <Check className="w-3.5 h-3.5 text-[#14532D]" aria-hidden="true" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Clearly separated Demo/Dev Simulation Panel */}
+          <section
+            aria-label="Công cụ mô phỏng thanh toán phục vụ demo"
+            className="rounded-2xl border border-dashed border-amber-400 bg-amber-50/70 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"
+          >
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="w-5 h-5 text-amber-800 shrink-0 mt-0.5" aria-hidden="true" />
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-amber-950">
+                  Chế độ Mô phỏng (Phục vụ Demo / Kiểm thử)
+                </div>
+                <p className="text-xs text-amber-900 mt-0.5">
+                  Đây là nút giả lập webhook ngân hàng cho môi trường phát triển, không phải xác nhận giao dịch ngân hàng thật.
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="md"
+              loading={simulating}
+              onClick={handleSimulatePayment}
+              className="shrink-0 border-amber-400 bg-white hover:bg-amber-100 text-amber-950"
+            >
+              <Zap className="w-4 h-4 text-amber-700" aria-hidden="true" />
+              {simulating ? 'Đang gửi webhook mẫu...' : 'Mô phỏng Webhook Thanh toán'}
+            </Button>
+          </section>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmCancelOpen}
+        title="Hủy giữ chỗ đơn đặt sân?"
+        description={`Khung giờ của đơn ${booking.booking_code} sẽ được giải phóng ngay lập tức cho người chơi khác.`}
+        confirmLabel="Xác nhận hủy đơn"
+        loading={cancelling}
+        onConfirm={handleConfirmCancel}
+        onCancel={() => setConfirmCancelOpen(false)}
+      />
     </div>
   );
 };

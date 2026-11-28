@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { UserPlus } from 'lucide-react';
+import { Eye, EyeOff, UserPlus } from 'lucide-react';
+import { Button } from '../components/ui/Button';
+import { AlertBanner } from '../components/ui/FeedbackStates';
 import { useAuth } from '../context/AuthContext';
 
 export const RegisterPage: React.FC = () => {
@@ -10,6 +12,7 @@ export const RegisterPage: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -18,7 +21,12 @@ export const RegisterPage: React.FC = () => {
     setError('');
     setSubmitting(true);
     try {
-      await register({ full_name: fullName, phone, email, password });
+      await register({
+        full_name: fullName.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
+        password,
+      });
       navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Đăng ký thất bại');
@@ -28,81 +36,117 @@ export const RegisterPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-md mx-auto mt-10 bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-      <div className="flex items-center gap-2.5 mb-5">
-        <div className="bg-emerald-100 text-emerald-700 p-2.5 rounded-xl">
-          <UserPlus className="w-5 h-5" />
+    <div className="max-w-md mx-auto px-4 py-10">
+      <div className="bg-white rounded-2xl border border-[#D4D6CD] p-6 sm:p-8 shadow-sm">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="bg-court text-ball-lime p-2.5 rounded-xl">
+            <UserPlus className="w-5 h-5" aria-hidden="true" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-charcoal">Đăng ký thành viên</h1>
+            <p className="text-xs text-court-muted">
+              Lưu lịch sử đặt sân và theo dõi vé QR mọi lúc
+            </p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Đăng ký tài khoản</h1>
-          <p className="text-xs text-slate-500">Lưu lịch sử đặt sân và quản lý vé QR dễ dàng</p>
-        </div>
+
+        {error && (
+          <div className="mb-4">
+            <AlertBanner tone="error">{error}</AlertBanner>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="reg-name" className="block text-sm font-semibold text-charcoal mb-1">
+              Họ và tên
+            </label>
+            <input
+              id="reg-name"
+              type="text"
+              required
+              minLength={2}
+              maxLength={150}
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="Nguyễn Văn A"
+              className="w-full rounded-lg border border-[#D4D6CD] px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-court focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="reg-phone" className="block text-sm font-semibold text-charcoal mb-1">
+              Số điện thoại
+            </label>
+            <input
+              id="reg-phone"
+              type="tel"
+              required
+              minLength={8}
+              maxLength={20}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="0901234567"
+              className="w-full rounded-lg border border-[#D4D6CD] px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-court focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="reg-email" className="block text-sm font-semibold text-charcoal mb-1">
+              Email
+            </label>
+            <input
+              id="reg-email"
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full rounded-lg border border-[#D4D6CD] px-3.5 py-2.5 text-sm focus:ring-2 focus:ring-court focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="reg-password" className="block text-sm font-semibold text-charcoal mb-1">
+              Mật khẩu (tối thiểu 6 ký tự)
+            </label>
+            <div className="relative">
+              <input
+                id="reg-password"
+                type={showPw ? 'text' : 'password'}
+                required
+                minLength={6}
+                maxLength={100}
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••"
+                className="w-full rounded-lg border border-[#D4D6CD] pl-3.5 pr-10 py-2.5 text-sm focus:ring-2 focus:ring-court focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-court-muted hover:text-charcoal"
+                aria-label={showPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+              >
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <Button type="submit" variant="primary" size="lg" loading={submitting} className="w-full">
+            {submitting ? 'Đang tạo tài khoản...' : 'Tạo tài khoản'}
+          </Button>
+        </form>
+
+        <p className="mt-5 text-center text-sm text-court-muted">
+          Đã có tài khoản?{' '}
+          <Link to="/login" className="text-court font-bold hover:underline">
+            Đăng nhập
+          </Link>
+        </p>
       </div>
-
-      {error && (
-        <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">{error}</div>
-      )}
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Họ và tên</label>
-          <input
-            type="text"
-            required
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            placeholder="Nguyễn Văn A"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Số điện thoại</label>
-          <input
-            type="tel"
-            required
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="0901234567"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Email nhận vé QR</label>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Mật khẩu (tối thiểu 6 ký tự)</label>
-          <input
-            type="password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={submitting}
-          className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg text-sm transition"
-        >
-          {submitting ? 'Đang tạo tài khoản...' : 'Tạo tài khoản'}
-        </button>
-      </form>
-
-      <p className="mt-5 text-center text-sm text-slate-600">
-        Đã có tài khoản?{' '}
-        <Link to="/login" className="text-emerald-700 font-semibold hover:underline">
-          Đăng nhập
-        </Link>
-      </p>
     </div>
   );
 };
